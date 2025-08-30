@@ -25,6 +25,16 @@ A faithful, modern Python reproduction of the classic 1977 turn-based strategy g
 - Fog of war reveals around the player and cities.
 
 ## Getting Started
+### Quick Start (Windows)
+- Double-click `Run_Game_233_Empire.bat` in the project folder.
+- If the window flashes and closes, open `last_run.log` in the folder for details, or run from PowerShell (see below).
+
+### Run from PowerShell
+```powershell
+cd "C:\Users\sugar\Desktop\ALL AI GAMES\Projects in prgress\Game 233 Empire"
+python main.py
+```
+
 ### Prerequisites
 - Python 3.9+
 - On Windows, `curses` is not built-in. The game will automatically fall back to a simple text mode if `curses` is unavailable. You can optionally install `windows-curses` for better terminal support:
@@ -33,12 +43,27 @@ A faithful, modern Python reproduction of the classic 1977 turn-based strategy g
 pip install windows-curses
 ```
 
-### Run
+### Run (manual)
 ```bash
 python main.py
 ```
 - Use arrow keys or `h/j/k/l` to pan (in curses mode), or `w/a/s/d` in fallback mode.
 - Press `Q` to quit.
+
+### One-Click Launcher (Windows)
+- `Run_Game_233_Empire.bat` will:
+  - Detect Python (`py` or `python`).
+  - Auto-install `windows-curses` on first run if missing.
+  - Launch the game and write output to `last_run.log`.
+- If something goes wrong, open `last_run.log` to see what happened.
+
+### Command-line Options
+- `--smoke` — headless smoke test; prints a one-screen snapshot and exits.
+
+Examples:
+```powershell
+python main.py --smoke
+```
 
 ## Project Structure
 ```
@@ -49,6 +74,7 @@ combat.py     # Combat resolution (stubbed placeholder)
 player.py     # Player model and AI placeholder
 savegame.py   # JSON serialization helpers (stubbed for future)
 README.md     # This file
+Run_Game_233_Empire.bat  # Windows launcher (double-click to start)
 ```
 
 ## Development Plan (Sprints)
@@ -75,6 +101,27 @@ README.md     # This file
 ## Testing
 - Modules are designed to be importable and testable (e.g., `GameMap.generate`, `resolve_attack`).
 - Future: add unit tests for generation, fog-of-war, and combat odds.
+
+## Controls
+- Curses UI: Arrow keys or `h`/`j`/`k`/`l` to pan; `Q` to quit.
+- Fallback text UI: `w`/`a`/`s`/`d` to pan; `q` to quit.
+
+## Troubleshooting (Windows)
+- Window opens and closes instantly when double-clicking:
+  - Run from PowerShell to see messages:
+    ```powershell
+    cd "C:\Users\sugar\Desktop\ALL AI GAMES\Projects in prgress\Game 233 Empire"
+    .\Run_Game_233_Empire.bat
+    ```
+  - Check `last_run.log` for errors.
+- Python not found:
+  - Install Python from `https://www.python.org/` and ensure it’s on PATH, or use the `py` launcher.
+- Arrow keys don’t work / no colors:
+  - Install `windows-curses`:
+    ```powershell
+    py -m pip install --user windows-curses
+    ```
+  - Then run `python main.py` again.
 
 ## Future Extensions
 - Multiplayer via sockets or hotseat with turn files.
