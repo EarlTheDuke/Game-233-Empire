@@ -28,7 +28,7 @@ from __future__ import annotations
 
 import sys
 import time
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
 
 try:
     import curses  # type: ignore
@@ -37,9 +37,10 @@ except Exception:
     curses = None  # type: ignore
     HAS_CURSES = False
 
-from map import GameMap
+from map import GameMap, City
 from units import Army, Unit
 from player import Player
+from combat import resolve_attack
 
 
 Viewport = Tuple[int, int, int, int]  # x, y, width, height
@@ -61,7 +62,8 @@ def overlay_units_on_buffer(buffer_lines: List[str], view: Viewport, units: List
         if vx <= u.x < vx + vw and vy <= u.y < vy + vh:
             ux, uy = u.x - vx, u.y - vy
             if 0 <= uy < len(canvas) and 0 <= ux < len(canvas[uy]):
-                canvas[uy][ux] = u.symbol
+                # Distinguish owners minimally: P1 'A', P2 'a'
+                canvas[uy][ux] = 'A' if u.owner == 'P1' else 'a'
     return ["".join(row) for row in canvas]
 
 
@@ -70,27 +72,37 @@ def build_initial_game(width: int = 60, height: int = 24) -> Tuple[GameMap, Play
     world.generate(seed=None)
     world.place_cities(count=12, min_separation=3)
 
-    human = Player(name="Human", is_ai=False)
-    ai = Player(name="AI", is_ai=True)
+    p1 = Player(name="P1", is_ai=False)
+    p2 = Player(name="P2", is_ai=False)
 
-    # Give one starter city to each if available
-    if world.cities:
-        # First city to human, last city to AI for visual separation
-        world.cities[0].owner = human.name
-        human.cities.add((world.cities[0].x, world.cities[0].y))
-        world.cities[-1].owner = ai.name
-        ai.cities.add((world.cities[-1].x, world.cities[-1].y))
+    # Assign starter cities if available
+    if len(world.cities) >= 2:
+        world.cities[0].owner = p1.name
+        p1.cities.add((world.cities[0].x, world.cities[0].y))
+        world.cities[-1].owner = p2.name
+        p2.cities.add((world.cities[-1].x, world.cities[-1].y))
 
-    # Spawn one army for the human at their city or nearest land tile
-    spawn_x, spawn_y = world.find_spawn_for_player(human.name)
-    player_units: List[Unit] = [Army(x=spawn_x, y=spawn_y, owner=human.name)]
+    # Spawn one army for each player at their city or nearest land tile
+    p1_x, p1_y = world.find_spawn_for_player(p1.name)
+    p2_x, p2_y = world.find_spawn_for_player(p2.name)
+    units: List[Unit] = [
+        Army(x=p1_x, y=p1_y, owner=p1.name),
+        Army(x=p2_x, y=p2_y, owner=p2.name),
+    ]
+    for u in units:
+        u.reset_moves()
 
-    # Reveal around starter locations
-    world.reveal(spawn_x, spawn_y, radius=5)
-    for (cx, cy) in human.cities:
-        world.reveal(cx, cy, radius=5)
+    # Hot-seat: reveal full map
+    world.reveal_all()
 
-    return world, human, ai, player_units
+    # Initialize default production values for owned cities (optional)
+    for c in world.cities:
+        if c.owner in (p1.name, p2.name):
+            c.production_type = "Army"
+            c.production_cost = 6
+            c.production_progress = 0
+
+    return world, p1, p2, units
 
 
 def render_view(world: GameMap, view: Viewport, units: List[Unit]) -> List[str]:
@@ -98,7 +110,123 @@ def render_view(world: GameMap, view: Viewport, units: List[Unit]) -> List[str]:
     return overlay_units_on_buffer(base, view, units)
 
 
-def run_curses(world: GameMap, human: Player, ai: Player, units: List[Unit]) -> None:
+# --- Game helpers for hot-seat ---
+def get_units_for_owner(units: List[Unit], owner: str) -> List[Unit]:
+    return [u for u in units if u.owner == owner and u.is_alive()]
+
+
+def unit_at(units: List[Unit], x: int, y: int) -> Optional[Unit]:
+    for u in units:
+        if u.is_alive() and u.x == x and u.y == y:
+            return u
+    return None
+
+
+def city_at(world: GameMap, x: int, y: int) -> Optional[City]:
+    for c in world.cities:
+        if c.x == x and c.y == y:
+            return c
+    return None
+
+
+def is_land(world: GameMap, x: int, y: int) -> bool:
+    if not (0 <= x < world.width and 0 <= y < world.height):
+        return False
+    return world.tiles[y][x] == '.'
+
+
+def try_capture_city(world: GameMap, unit: Unit) -> None:
+    c = city_at(world, unit.x, unit.y)
+    if c is None:
+        return
+    if c.owner != unit.owner:
+        c.owner = unit.owner
+
+
+def try_move_unit(world: GameMap, units: List[Unit], u: Unit, dx: int, dy: int) -> None:
+    if not u.can_move():
+        return
+    nx, ny = u.x + dx, u.y + dy
+    if not is_land(world, nx, ny):
+        return
+    blocking = unit_at(units, nx, ny)
+    if blocking is not None:
+        if blocking.owner == u.owner:
+            return  # cannot stack
+        # combat
+        attacker_alive, defender_alive = resolve_attack(u, blocking)
+        if not defender_alive:
+            # remove defender; move in if attacker alive
+            blocking.hp = 0
+            if attacker_alive:
+                u.x, u.y = nx, ny
+                u.moves_left -= 1
+                try_capture_city(world, u)
+        else:
+            # defender survived; attacker may have died
+            if not attacker_alive:
+                u.hp = 0
+        return
+    # Move into empty land
+    u.x, u.y = nx, ny
+    u.moves_left -= 1
+    try_capture_city(world, u)
+
+
+def advance_production_and_spawn(world: GameMap, units: List[Unit]) -> None:
+    for c in world.cities:
+        if c.owner is None or c.owner == 'neutral':
+            continue
+        if c.production_type == 'Army' and c.production_cost > 0:
+            c.production_progress += 1
+            if c.production_progress >= c.production_cost:
+                # Try to spawn at city tile or adjacent land tile
+                spawn_positions: List[Tuple[int, int]] = [
+                    (c.x, c.y),
+                    (c.x + 1, c.y), (c.x - 1, c.y), (c.x, c.y + 1), (c.x, c.y - 1),
+                ]
+                placed = False
+                for (sx, sy) in spawn_positions:
+                    if 0 <= sx < world.width and 0 <= sy < world.height:
+                        if is_land(world, sx, sy) and unit_at(units, sx, sy) is None:
+                            nu = Army(x=sx, y=sy, owner=c.owner)
+                            nu.reset_moves()
+                            units.append(nu)
+                            placed = True
+                            break
+                if placed:
+                    c.production_progress = 0
+                else:
+                    # try again next turn
+                    c.production_progress = c.production_cost  # stay ready
+
+
+def reset_moves_for_owner(units: List[Unit], owner: str) -> None:
+    for u in units:
+        if u.owner == owner and u.is_alive():
+            u.reset_moves()
+
+
+def select_next_unit(units: List[Unit], owner: str, current: Optional[Unit]) -> Optional[Unit]:
+    own_units = [u for u in units if u.owner == owner and u.is_alive()]
+    if not own_units:
+        return None
+    if current is None or current not in own_units:
+        # find first with moves
+        for u in own_units:
+            if u.can_move():
+                return u
+        return own_units[0]
+    # rotate
+    idx = own_units.index(current)
+    for i in range(1, len(own_units) + 1):
+        cand = own_units[(idx + i) % len(own_units)]
+        if cand.can_move():
+            return cand
+    return own_units[(idx + 1) % len(own_units)]
+
+
+def run_curses(world: GameMap, p1: Player, p2: Player, units: List[Unit]) -> None:
     assert HAS_CURSES and curses is not None
 
     def _main(stdscr: "curses._CursesWindow") -> None:  # type: ignore
@@ -112,6 +240,14 @@ def run_curses(world: GameMap, human: Player, ai: Player, units: List[Unit]) -> 
         vh = max(10, min(world.height, max_y - 1))
         vx, vy = 0, 0
 
+        current_player = p1.name
+        turn_number = 1
+        selected: Optional[Unit] = None
+        vw = max(20, min(world.width, max_x))
+        vh = max(10, min(world.height, max_y - 1))
+        vx, vy = 0, 0
+        reset_moves_for_owner(units, current_player)
+
         while True:
             view: Viewport = (vx, vy, vw, vh)
             lines = render_view(world, view, units)
@@ -119,9 +255,14 @@ def run_curses(world: GameMap, human: Player, ai: Player, units: List[Unit]) -> 
             for row_idx, line in enumerate(lines[:vh]):
                 stdscr.addstr(row_idx, 0, line[:vw])
 
+            city_under_view: Optional[City] = None
+            # Status: player, turn, selected unit, hint keys
+            sel_txt = "none"
+            if selected is not None and selected.is_alive():
+                sel_txt = f"{selected.owner} A @({selected.x},{selected.y}) mp:{selected.moves_left}"
             status = (
-                f"Game 233 Empire | View ({vx},{vy}) {vw}x{vh} | Cities: {len(world.cities)} | "
-                f"Q=Quit"
+                f"P:{current_player} T:{turn_number} | Units:{len([u for u in units if u.is_alive()])} "
+                f"Sel:{sel_txt} | Keys: N-next WASD-move B-build E-end Q-quit | Arrows pan"
             )
             stdscr.addstr(vh, 0, status[:vw])
             stdscr.refresh()
@@ -137,20 +278,79 @@ def run_curses(world: GameMap, human: Player, ai: Player, units: List[Unit]) -> 
                 vy = clamp(vy - 1, 0, max(0, world.height - vh))
             elif key in (curses.KEY_DOWN, ord('j')):
                 vy = clamp(vy + 1, 0, max(0, world.height - vh))
+            elif key in (ord('n'), ord('N')):
+                selected = select_next_unit(units, current_player, selected)
+            elif key in (ord('w'), ord('W')):
+                if selected is None:
+                    selected = select_next_unit(units, current_player, selected)
+                if selected is not None and selected.owner == current_player:
+                    try_move_unit(world, units, selected, 0, -1)
+            elif key in (ord('s'), ord('S')):
+                if selected is None:
+                    selected = select_next_unit(units, current_player, selected)
+                if selected is not None and selected.owner == current_player:
+                    try_move_unit(world, units, selected, 0, 1)
+            elif key in (ord('a'), ord('A')):
+                if selected is None:
+                    selected = select_next_unit(units, current_player, selected)
+                if selected is not None and selected.owner == current_player:
+                    try_move_unit(world, units, selected, -1, 0)
+            elif key in (ord('d'), ord('D')):
+                if selected is None:
+                    selected = select_next_unit(units, current_player, selected)
+                if selected is not None and selected.owner == current_player:
+                    try_move_unit(world, units, selected, 1, 0)
+            elif key in (ord('b'), ord('B')):
+                # Set production at city under selected unit, if owned
+                if selected is not None and selected.owner == current_player:
+                    c = city_at(world, selected.x, selected.y)
+                    if c is not None and c.owner == current_player:
+                        c.production_type = 'Army'
+                        c.production_cost = 6
+                        # keep progress
+            elif key in (ord('e'), ord('E')):
+                # End turn: production, switch player, reset moves, check victory
+                advance_production_and_spawn(world, units)
+                # Victory check: opponent has zero cities
+                opponent = p2.name if current_player == p1.name else p1.name
+                opp_city_count = sum(1 for c in world.cities if c.owner == opponent)
+                my_city_count = sum(1 for c in world.cities if c.owner == current_player)
+                if opp_city_count == 0 and my_city_count > 0:
+                    stdscr.addstr(vh, 0, f"{current_player} wins! Press Q to quit."[:vw])
+                    stdscr.refresh()
+                    # wait for Q
+                    while True:
+                        k2 = stdscr.getch()
+                        if k2 in (ord('q'), ord('Q')):
+                            return
+                # Switch player
+                # Handoff prompt
+                stdscr.addstr(vh, 0, f"Turn over for {current_player}. Hand off to {opponent}. Press any key..."[:vw])
+                stdscr.refresh()
+                stdscr.getch()
+                current_player = opponent
+                turn_number += 1
+                reset_moves_for_owner(units, current_player)
+                selected = None
 
     curses.wrapper(_main)
 
 
-def run_fallback(world: GameMap, human: Player, ai: Player, units: List[Unit]) -> None:
-    # Simple CLI fallback; type commands to pan (w/a/s/d), q to quit
+def run_fallback(world: GameMap, p1: Player, p2: Player, units: List[Unit]) -> None:
+    # Text UI with typed commands
     vw, vh = min(world.width, 60), min(world.height, 20)
     vx, vy = 0, 0
-    print("Curses not available. Using fallback text UI. Type w/a/s/d to pan, q to quit.")
+    current_player = p1.name
+    turn_number = 1
+    selected: Optional[Unit] = None
+    reset_moves_for_owner(units, current_player)
+    print("Text UI. Commands: n=next, wasd=move, b=build, e=end, q=quit; arrows: pan")
     while True:
         view: Viewport = (vx, vy, vw, vh)
         for line in render_view(world, view, units):
             print(line)
-        print(f"View({vx},{vy}) {vw}x{vh} | Cities: {len(world.cities)} | q to quit")
+        sel_txt = "none" if selected is None else f"{selected.owner} A @({selected.x},{selected.y}) mp:{selected.moves_left}"
+        print(f"P:{current_player} T:{turn_number} | Sel:{sel_txt} | Cities:{len(world.cities)} | n/wasd/b/e/q | arrows pan")
         cmd = input("> ").strip().lower()
         if cmd == 'q':
             break
@@ -162,7 +362,52 @@ def run_fallback(world: GameMap, human: Player, ai: Player, units: List[Unit]) -
             vy = clamp(vy - 1, 0, max(0, world.height - vh))
         elif cmd == 's':
             vy = clamp(vy + 1, 0, max(0, world.height - vh))
-        print("\n" * 2)
+        elif cmd == 'n':
+            selected = select_next_unit(units, current_player, selected)
+        elif cmd in ('i', 'k', 'j', 'l', 'up', 'down', 'left', 'right', 'move', 'm', 'wasd'):
+            # support 'i/j/k/l' or 'w/a/s/d' style by checking exact strings next
+            pass
+        elif cmd == 'b':
+            if selected is not None and selected.owner == current_player:
+                c = city_at(world, selected.x, selected.y)
+                if c is not None and c.owner == current_player:
+                    c.production_type = 'Army'
+                    c.production_cost = 6
+        elif cmd == 'e':
+            advance_production_and_spawn(world, units)
+            opponent = p2.name if current_player == p1.name else p1.name
+            opp_city_count = sum(1 for c in world.cities if c.owner == opponent)
+            my_city_count = sum(1 for c in world.cities if c.owner == current_player)
+            if opp_city_count == 0 and my_city_count > 0:
+                print(f"{current_player} wins!")
+                break
+            input(f"Turn over for {current_player}. Hand off to {opponent}. Press Enter...")
+            current_player = opponent
+            turn_number += 1
+            reset_moves_for_owner(units, current_player)
+            selected = None
+        # Movement commands
+        if cmd in ('i',):
+            if selected is None:
+                selected = select_next_unit(units, current_player, selected)
+            if selected is not None and selected.owner == current_player:
+                try_move_unit(world, units, selected, 0, -1)
+        elif cmd in ('k',):
+            if selected is None:
+                selected = select_next_unit(units, current_player, selected)
+            if selected is not None and selected.owner == current_player:
+                try_move_unit(world, units, selected, 0, 1)
+        elif cmd in ('j',):
+            if selected is None:
+                selected = select_next_unit(units, current_player, selected)
+            if selected is not None and selected.owner == current_player:
+                try_move_unit(world, units, selected, -1, 0)
+        elif cmd in ('l',):
+            if selected is None:
+                selected = select_next_unit(units, current_player, selected)
+            if selected is not None and selected.owner == current_player:
+                try_move_unit(world, units, selected, 1, 0)
+        print("\n" * 1)
 
 
 def main() -> int:
@@ -177,16 +422,16 @@ def main() -> int:
         print("SMOKE: end")
         return 0
 
-    world, human, ai, units = build_initial_game(width=60, height=24)
+    world, p1, p2, units = build_initial_game(width=60, height=24)
     if HAS_CURSES:
         try:
-            run_curses(world, human, ai, units)
+            run_curses(world, p1, p2, units)
         except Exception as exc:
             # Fallback if curses fails at runtime
             print(f"Curses error: {exc}. Falling back to text mode.")
-            run_fallback(world, human, ai, units)
+            run_fallback(world, p1, p2, units)
     else:
-        run_fallback(world, human, ai, units)
+        run_fallback(world, p1, p2, units)
     return 0
 
 

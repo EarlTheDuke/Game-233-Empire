@@ -14,9 +14,16 @@ class Unit:
     hp: int = 10
     movement_points: int = 1
     fuel: Optional[int] = None  # For aircraft
+    moves_left: int = 1  # reset each turn
 
     def is_alive(self) -> bool:
         return self.hp > 0
+
+    def reset_moves(self) -> None:
+        self.moves_left = self.movement_points
+
+    def can_move(self) -> bool:
+        return self.moves_left > 0 and self.is_alive()
 
 
 class Army(Unit):

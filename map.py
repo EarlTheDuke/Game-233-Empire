@@ -16,13 +16,18 @@ class City:
     x: int
     y: int
     owner: Optional[str] = None  # None or 'neutral' indicates neutral
+    # Hot-seat MVP production fields
+    production_type: Optional[str] = None  # e.g., 'Army'
+    production_progress: int = 0
+    production_cost: int = 0
 
     def symbol(self) -> str:
         if self.owner is None or self.owner == 'neutral':
             return 'o'
-        if self.owner.lower().startswith('ai'):
+        # Two-player hot-seat glyphs
+        if self.owner in ("P2", "Player 2"):
             return 'X'
-        # Player-owned
+        # Player 1 or any other named owner
         return 'O'
 
 
@@ -127,6 +132,12 @@ class GameMap:
             for xx in range(max(0, x - radius), min(self.width, x + radius + 1)):
                 if (xx - x) * (xx - x) + (yy - y) * (yy - y) <= r2:
                     self.fog[yy][xx] = False
+
+    def reveal_all(self) -> None:
+        # Disable fog-of-war for hot-seat MVP
+        for y in range(self.height):
+            for x in range(self.width):
+                self.fog[y][x] = False
 
     # --- Rendering ---
     def render(self, view: Tuple[int, int, int, int]) -> List[str]:

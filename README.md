@@ -24,6 +24,14 @@ A faithful, modern Python reproduction of the classic 1977 turn-based strategy g
 - Renders a scrollable viewport using `curses` when available; otherwise falls back to a simple text UI.
 - Fog of war reveals around the player and cities.
 
+## Hot-seat MVP (2 players)
+- Two players (P1 and P2) take turns on the same keyboard.
+- No fog-of-war (full map visible); cities show ownership (`O` for P1, `X` for P2, `o` for neutral).
+- Each player starts with one city and one Army.
+- Armies move 1 tile per turn on land only. Entering an enemy/neutral city captures it. Entering an enemy unit’s tile triggers combat.
+- Cities can produce Armies (default cost 6 turns). Finished units spawn at the city or adjacent land tile.
+- Victory: opponent has no cities.
+
 ## Getting Started
 ### Quick Start (Windows)
 - Double-click `Run_Game_233_Empire.bat` in the project folder.
@@ -47,8 +55,18 @@ pip install windows-curses
 ```bash
 python main.py
 ```
-- Use arrow keys or `h/j/k/l` to pan (in curses mode), or `w/a/s/d` in fallback mode.
-- Press `Q` to quit.
+- Curses UI keys:
+  - Arrow keys or `h/j/k/l` to pan
+  - `N` select next unit, `W/A/S/D` move selected unit
+  - `B` set production to Army at owned city under selected unit
+  - `E` end turn (hands off to the other player)
+  - `Q` quit
+- Fallback text UI commands:
+  - Pan with `w/a/s/d`
+  - `n` select next unit, `i/j/k/l` move selected unit
+  - `b` set production to Army at owned city under selected unit
+  - `e` end turn (hands off to the other player)
+  - `q` quit
 
 ### One-Click Launcher (Windows)
 - `Run_Game_233_Empire.bat` will:
@@ -103,8 +121,8 @@ Run_Game_233_Empire.bat  # Windows launcher (double-click to start)
 - Future: add unit tests for generation, fog-of-war, and combat odds.
 
 ## Controls
-- Curses UI: Arrow keys or `h`/`j`/`k`/`l` to pan; `Q` to quit.
-- Fallback text UI: `w`/`a`/`s`/`d` to pan; `q` to quit.
+- Curses UI: Pan with arrows or `h/j/k/l`; `N` next unit; `W/A/S/D` move; `B` build Army; `E` end turn; `Q` quit.
+- Fallback text UI: Pan with `w/a/s/d`; `n` next unit; `i/j/k/l` move; `b` build Army; `e` end turn; `q` quit.
 
 ## Troubleshooting (Windows)
 - Window opens and closes instantly when double-clicking:
