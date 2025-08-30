@@ -135,24 +135,33 @@ def is_land(world: GameMap, x: int, y: int) -> bool:
     return world.tiles[y][x] == '.'
 
 
-def try_capture_city(world: GameMap, unit: Unit) -> None:
+def try_capture_city(world: GameMap, unit: Unit) -> bool:
     c = city_at(world, unit.x, unit.y)
     if c is None:
-        return
+        return False
     if c.owner != unit.owner:
         c.owner = unit.owner
+        # auto-set basic production on capture
+        c.production_type = 'Army'
+        c.production_cost = 6
+        c.production_progress = 0
+        return True
+    return False
 
 
-def try_move_unit(world: GameMap, units: List[Unit], u: Unit, dx: int, dy: int) -> None:
+def try_move_unit(world: GameMap, units: List[Unit], u: Unit, dx: int, dy: int) -> Tuple[bool, bool, bool]:
+    """
+    Returns (moved_or_fought, captured_city, immediate_victory)
+    """
     if not u.can_move():
-        return
+        return False, False, False
     nx, ny = u.x + dx, u.y + dy
     if not is_land(world, nx, ny):
-        return
+        return False, False, False
     blocking = unit_at(units, nx, ny)
     if blocking is not None:
         if blocking.owner == u.owner:
-            return  # cannot stack
+            return False, False, False  # cannot stack
         # combat
         attacker_alive, defender_alive = resolve_attack(u, blocking)
         if not defender_alive:
@@ -161,16 +170,28 @@ def try_move_unit(world: GameMap, units: List[Unit], u: Unit, dx: int, dy: int) 
             if attacker_alive:
                 u.x, u.y = nx, ny
                 u.moves_left -= 1
-                try_capture_city(world, u)
+                captured = try_capture_city(world, u)
+                if captured:
+                    opponent = 'P2' if u.owner == 'P1' else 'P1'
+                    opp_city_count = sum(1 for c in world.cities if c.owner == opponent)
+                    my_city_count = sum(1 for c in world.cities if c.owner == u.owner)
+                    return True, True, (opp_city_count == 0 and my_city_count > 0)
+                return True, False, False
         else:
             # defender survived; attacker may have died
             if not attacker_alive:
                 u.hp = 0
-        return
+        return True, False, False
     # Move into empty land
     u.x, u.y = nx, ny
     u.moves_left -= 1
-    try_capture_city(world, u)
+    captured = try_capture_city(world, u)
+    if captured:
+        opponent = 'P2' if u.owner == 'P1' else 'P1'
+        opp_city_count = sum(1 for c in world.cities if c.owner == opponent)
+        my_city_count = sum(1 for c in world.cities if c.owner == u.owner)
+        return True, True, (opp_city_count == 0 and my_city_count > 0)
+    return True, False, False
 
 
 def advance_production_and_spawn(world: GameMap, units: List[Unit]) -> None:
@@ -184,6 +205,7 @@ def advance_production_and_spawn(world: GameMap, units: List[Unit]) -> None:
                 spawn_positions: List[Tuple[int, int]] = [
                     (c.x, c.y),
                     (c.x + 1, c.y), (c.x - 1, c.y), (c.x, c.y + 1), (c.x, c.y - 1),
+                    (c.x + 1, c.y + 1), (c.x - 1, c.y - 1), (c.x + 1, c.y - 1), (c.x - 1, c.y + 1),
                 ]
                 placed = False
                 for (sx, sy) in spawn_positions:
@@ -226,6 +248,46 @@ def select_next_unit(units: List[Unit], owner: str, current: Optional[Unit]) -> 
     return own_units[(idx + 1) % len(own_units)]
 
 
+def build_sidebar_lines(ui: str) -> List[str]:
+    # ui: 'curses' or 'fallback' for key differences
+    if ui == 'curses':
+        commands = [
+            "Commands:",
+            " N  Next unit",
+            " W/A/S/D Move",
+            " B  Build Army",
+            " E  End turn",
+            " Q  Quit",
+            " Pan: Arrows/HJKL",
+        ]
+    else:
+        commands = [
+            "Commands:",
+            " n  Next unit",
+            " i/j/k/l Move",
+            " b  Build Army",
+            " e  End turn",
+            " q  Quit",
+            " Pan: w/a/s/d",
+        ]
+    terrain = [
+        "",
+        "Terrain:",
+        " .  Land",
+        " ~  Ocean",
+        " O  City (P1)",
+        " X  City (P2)",
+        " o  City (Neutral)",
+    ]
+    units_help = [
+        "",
+        "Units:",
+        " A  Army (P1)",
+        " a  Army (P2)",
+    ]
+    return commands + terrain + units_help
+
+
 def run_curses(world: GameMap, p1: Player, p2: Player, units: List[Unit]) -> None:
     assert HAS_CURSES and curses is not None
 
@@ -243,7 +305,10 @@ def run_curses(world: GameMap, p1: Player, p2: Player, units: List[Unit]) -> Non
         current_player = p1.name
         turn_number = 1
         selected: Optional[Unit] = None
-        vw = max(20, min(world.width, max_x))
+        # reserve sidebar width
+        sidebar_lines = build_sidebar_lines('curses')
+        sidebar_w = max(len(line) for line in sidebar_lines) + 1
+        vw = max(20, min(world.width, max_x - sidebar_w))
         vh = max(10, min(world.height, max_y - 1))
         vx, vy = 0, 0
         reset_moves_for_owner(units, current_player)
@@ -254,22 +319,39 @@ def run_curses(world: GameMap, p1: Player, p2: Player, units: List[Unit]) -> Non
             stdscr.erase()
             for row_idx, line in enumerate(lines[:vh]):
                 stdscr.addstr(row_idx, 0, line[:vw])
+                # right-side sidebar content
+                if row_idx < len(sidebar_lines):
+                    stdscr.addstr(row_idx, vw + 1, sidebar_lines[row_idx][:sidebar_w - 1])
 
             city_under_view: Optional[City] = None
             # Status: player, turn, selected unit, hint keys
             sel_txt = "none"
             if selected is not None and selected.is_alive():
                 sel_txt = f"{selected.owner} A @({selected.x},{selected.y}) mp:{selected.moves_left}"
+            # City info under selected unit
+            city_info = ""
+            if selected is not None and selected.is_alive():
+                c = city_at(world, selected.x, selected.y)
+                if c is not None and c.owner == current_player and c.production_type == 'Army' and c.production_cost > 0:
+                    eta = max(0, c.production_cost - c.production_progress)
+                    city_info = f" | City: Army ETA {eta}"
             status = (
                 f"P:{current_player} T:{turn_number} | Units:{len([u for u in units if u.is_alive()])} "
-                f"Sel:{sel_txt} | Keys: N-next WASD-move B-build E-end Q-quit | Arrows pan"
+                f"Sel:{sel_txt}{city_info} | Keys: N-next WASD-move Space-skip B-build E-end Q-quit | Arrows pan"
             )
             stdscr.addstr(vh, 0, status[:vw])
             stdscr.refresh()
 
             key = stdscr.getch()
             if key in (ord('q'), ord('Q')):
-                break
+                # confirm quit if game in progress
+                stdscr.addstr(vh, 0, "Quit? (y/N)"[:vw])
+                stdscr.refresh()
+                k2 = stdscr.getch()
+                if k2 in (ord('y'), ord('Y')):
+                    break
+                else:
+                    continue
             elif key in (curses.KEY_LEFT, ord('h')):
                 vx = clamp(vx - 1, 0, max(0, world.width - vw))
             elif key in (curses.KEY_RIGHT, ord('l')):
@@ -284,22 +366,62 @@ def run_curses(world: GameMap, p1: Player, p2: Player, units: List[Unit]) -> Non
                 if selected is None:
                     selected = select_next_unit(units, current_player, selected)
                 if selected is not None and selected.owner == current_player:
-                    try_move_unit(world, units, selected, 0, -1)
+                    moved, captured, victory = try_move_unit(world, units, selected, 0, -1)
+                    if victory:
+                        stdscr.addstr(vh, 0, f"{current_player} wins! Press Q to quit."[:vw])
+                        stdscr.refresh()
+                        while True:
+                            k2 = stdscr.getch()
+                            if k2 in (ord('q'), ord('Q')):
+                                return
+                    if moved:
+                        # auto-select next ready unit
+                        selected = select_next_unit(units, current_player, selected)
             elif key in (ord('s'), ord('S')):
                 if selected is None:
                     selected = select_next_unit(units, current_player, selected)
                 if selected is not None and selected.owner == current_player:
-                    try_move_unit(world, units, selected, 0, 1)
+                    moved, captured, victory = try_move_unit(world, units, selected, 0, 1)
+                    if victory:
+                        stdscr.addstr(vh, 0, f"{current_player} wins! Press Q to quit."[:vw])
+                        stdscr.refresh()
+                        while True:
+                            k2 = stdscr.getch()
+                            if k2 in (ord('q'), ord('Q')):
+                                return
+                    if moved:
+                        selected = select_next_unit(units, current_player, selected)
             elif key in (ord('a'), ord('A')):
                 if selected is None:
                     selected = select_next_unit(units, current_player, selected)
                 if selected is not None and selected.owner == current_player:
-                    try_move_unit(world, units, selected, -1, 0)
+                    moved, captured, victory = try_move_unit(world, units, selected, -1, 0)
+                    if victory:
+                        stdscr.addstr(vh, 0, f"{current_player} wins! Press Q to quit."[:vw])
+                        stdscr.refresh()
+                        while True:
+                            k2 = stdscr.getch()
+                            if k2 in (ord('q'), ord('Q')):
+                                return
+                    if moved:
+                        selected = select_next_unit(units, current_player, selected)
             elif key in (ord('d'), ord('D')):
                 if selected is None:
                     selected = select_next_unit(units, current_player, selected)
                 if selected is not None and selected.owner == current_player:
-                    try_move_unit(world, units, selected, 1, 0)
+                    moved, captured, victory = try_move_unit(world, units, selected, 1, 0)
+                    if victory:
+                        stdscr.addstr(vh, 0, f"{current_player} wins! Press Q to quit."[:vw])
+                        stdscr.refresh()
+                        while True:
+                            k2 = stdscr.getch()
+                            if k2 in (ord('q'), ord('Q')):
+                                return
+                    if moved:
+                        selected = select_next_unit(units, current_player, selected)
+            elif key in (ord(' '),):
+                # Skip / wait: just advance selection
+                selected = select_next_unit(units, current_player, selected)
             elif key in (ord('b'), ord('B')):
                 # Set production at city under selected unit, if owned
                 if selected is not None and selected.owner == current_player:
@@ -337,8 +459,12 @@ def run_curses(world: GameMap, p1: Player, p2: Player, units: List[Unit]) -> Non
 
 
 def run_fallback(world: GameMap, p1: Player, p2: Player, units: List[Unit]) -> None:
-    # Text UI with typed commands
+    # Text UI with typed commands and a sidebar printed to the right
+    sidebar_lines = build_sidebar_lines('fallback')
+    sidebar_w = max(len(line) for line in sidebar_lines) + 1
     vw, vh = min(world.width, 60), min(world.height, 20)
+    # reduce vw to give space to sidebar in console output
+    vw = max(20, vw - sidebar_w)
     vx, vy = 0, 0
     current_player = p1.name
     turn_number = 1
@@ -347,13 +473,27 @@ def run_fallback(world: GameMap, p1: Player, p2: Player, units: List[Unit]) -> N
     print("Text UI. Commands: n=next, wasd=move, b=build, e=end, q=quit; arrows: pan")
     while True:
         view: Viewport = (vx, vy, vw, vh)
-        for line in render_view(world, view, units):
-            print(line)
+        board_lines = render_view(world, view, units)
+        for row_idx in range(vh):
+            left = board_lines[row_idx] if row_idx < len(board_lines) else ""
+            right = sidebar_lines[row_idx] if row_idx < len(sidebar_lines) else ""
+            print(f"{left:<{vw}} {right}")
         sel_txt = "none" if selected is None else f"{selected.owner} A @({selected.x},{selected.y}) mp:{selected.moves_left}"
-        print(f"P:{current_player} T:{turn_number} | Sel:{sel_txt} | Cities:{len(world.cities)} | n/wasd/b/e/q | arrows pan")
+        # Show city info / ETA if under selected unit
+        city_info = ""
+        if selected is not None:
+            c = city_at(world, selected.x, selected.y)
+            if c is not None and c.owner == current_player and c.production_type == 'Army' and c.production_cost > 0:
+                eta = max(0, c.production_cost - c.production_progress)
+                city_info = f" | City: Army ETA {eta}"
+        print(f"P:{current_player} T:{turn_number} | Sel:{sel_txt}{city_info} | n/wasd/b/e/q | arrows pan")
         cmd = input("> ").strip().lower()
         if cmd == 'q':
-            break
+            ans = input("Quit? (y/N) ").strip().lower()
+            if ans == 'y':
+                break
+            else:
+                continue
         elif cmd == 'a':
             vx = clamp(vx - 1, 0, max(0, world.width - vw))
         elif cmd == 'd':
@@ -386,27 +526,49 @@ def run_fallback(world: GameMap, p1: Player, p2: Player, units: List[Unit]) -> N
             turn_number += 1
             reset_moves_for_owner(units, current_player)
             selected = None
-        # Movement commands
+        # Movement commands and skip
         if cmd in ('i',):
             if selected is None:
                 selected = select_next_unit(units, current_player, selected)
             if selected is not None and selected.owner == current_player:
-                try_move_unit(world, units, selected, 0, -1)
+                moved, captured, victory = try_move_unit(world, units, selected, 0, -1)
+                if victory:
+                    print(f"{current_player} wins!")
+                    break
+                if moved:
+                    selected = select_next_unit(units, current_player, selected)
         elif cmd in ('k',):
             if selected is None:
                 selected = select_next_unit(units, current_player, selected)
             if selected is not None and selected.owner == current_player:
-                try_move_unit(world, units, selected, 0, 1)
+                moved, captured, victory = try_move_unit(world, units, selected, 0, 1)
+                if victory:
+                    print(f"{current_player} wins!")
+                    break
+                if moved:
+                    selected = select_next_unit(units, current_player, selected)
         elif cmd in ('j',):
             if selected is None:
                 selected = select_next_unit(units, current_player, selected)
             if selected is not None and selected.owner == current_player:
-                try_move_unit(world, units, selected, -1, 0)
+                moved, captured, victory = try_move_unit(world, units, selected, -1, 0)
+                if victory:
+                    print(f"{current_player} wins!")
+                    break
+                if moved:
+                    selected = select_next_unit(units, current_player, selected)
         elif cmd in ('l',):
             if selected is None:
                 selected = select_next_unit(units, current_player, selected)
             if selected is not None and selected.owner == current_player:
-                try_move_unit(world, units, selected, 1, 0)
+                moved, captured, victory = try_move_unit(world, units, selected, 1, 0)
+                if victory:
+                    print(f"{current_player} wins!")
+                    break
+                if moved:
+                    selected = select_next_unit(units, current_player, selected)
+        elif cmd in (' ', 'skip', 'wait'):
+            selected = select_next_unit(units, current_player, selected)
         print("\n" * 1)
 
 
