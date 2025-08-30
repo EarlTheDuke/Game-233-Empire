@@ -149,19 +149,19 @@ def try_capture_city(world: GameMap, unit: Unit) -> bool:
     return False
 
 
-def try_move_unit(world: GameMap, units: List[Unit], u: Unit, dx: int, dy: int) -> Tuple[bool, bool, bool]:
+def try_move_unit(world: GameMap, units: List[Unit], u: Unit, dx: int, dy: int) -> Tuple[bool, bool, bool, str]:
     """
-    Returns (moved_or_fought, captured_city, immediate_victory)
+    Returns (moved_or_fought, captured_city, immediate_victory, message)
     """
     if not u.can_move():
-        return False, False, False
+        return False, False, False, ""
     nx, ny = u.x + dx, u.y + dy
     if not is_land(world, nx, ny):
-        return False, False, False
+        return False, False, False, ""
     blocking = unit_at(units, nx, ny)
     if blocking is not None:
         if blocking.owner == u.owner:
-            return False, False, False  # cannot stack
+            return False, False, False, ""  # cannot stack
         # combat
         attacker_alive, defender_alive = resolve_attack(u, blocking)
         if not defender_alive:
@@ -175,13 +175,13 @@ def try_move_unit(world: GameMap, units: List[Unit], u: Unit, dx: int, dy: int) 
                     opponent = 'P2' if u.owner == 'P1' else 'P1'
                     opp_city_count = sum(1 for c in world.cities if c.owner == opponent)
                     my_city_count = sum(1 for c in world.cities if c.owner == u.owner)
-                    return True, True, (opp_city_count == 0 and my_city_count > 0)
-                return True, False, False
+                    return True, True, (opp_city_count == 0 and my_city_count > 0), "Defender destroyed"
+                return True, False, False, "Defender destroyed"
         else:
             # defender survived; attacker may have died
             if not attacker_alive:
                 u.hp = 0
-        return True, False, False
+        return True, False, False, "Attacker destroyed"
     # Move into empty land
     u.x, u.y = nx, ny
     u.moves_left -= 1
@@ -190,8 +190,8 @@ def try_move_unit(world: GameMap, units: List[Unit], u: Unit, dx: int, dy: int) 
         opponent = 'P2' if u.owner == 'P1' else 'P1'
         opp_city_count = sum(1 for c in world.cities if c.owner == opponent)
         my_city_count = sum(1 for c in world.cities if c.owner == u.owner)
-        return True, True, (opp_city_count == 0 and my_city_count > 0)
-    return True, False, False
+        return True, True, (opp_city_count == 0 and my_city_count > 0), "City captured"
+    return True, False, False, ""
 
 
 def advance_production_and_spawn(world: GameMap, units: List[Unit]) -> None:
@@ -336,7 +336,7 @@ def run_curses(world: GameMap, p1: Player, p2: Player, units: List[Unit]) -> Non
             # Status: player, turn, selected unit, hint keys
             sel_txt = "none"
             if selected is not None and selected.is_alive():
-                sel_txt = f"{selected.owner} A @({selected.x},{selected.y}) mp:{selected.moves_left}"
+                sel_txt = f"{selected.owner} A @({selected.x},{selected.y}) hp:{selected.hp}/{selected.max_hp} mp:{selected.moves_left}"
             # City info under selected unit
             city_info = ""
             if selected is not None and selected.is_alive():
@@ -375,7 +375,7 @@ def run_curses(world: GameMap, p1: Player, p2: Player, units: List[Unit]) -> Non
                 if selected is None:
                     selected = select_next_unit(units, current_player, selected)
                 if selected is not None and selected.owner == current_player:
-                    moved, captured, victory = try_move_unit(world, units, selected, 0, -1)
+                    moved, captured, victory, _ = try_move_unit(world, units, selected, 0, -1)
                     if victory:
                         stdscr.addstr(vh, 0, f"{current_player} wins! Press Q to quit."[:vw])
                         stdscr.refresh()
@@ -390,7 +390,7 @@ def run_curses(world: GameMap, p1: Player, p2: Player, units: List[Unit]) -> Non
                 if selected is None:
                     selected = select_next_unit(units, current_player, selected)
                 if selected is not None and selected.owner == current_player:
-                    moved, captured, victory = try_move_unit(world, units, selected, 0, 1)
+                    moved, captured, victory, _ = try_move_unit(world, units, selected, 0, 1)
                     if victory:
                         stdscr.addstr(vh, 0, f"{current_player} wins! Press Q to quit."[:vw])
                         stdscr.refresh()
@@ -404,7 +404,7 @@ def run_curses(world: GameMap, p1: Player, p2: Player, units: List[Unit]) -> Non
                 if selected is None:
                     selected = select_next_unit(units, current_player, selected)
                 if selected is not None and selected.owner == current_player:
-                    moved, captured, victory = try_move_unit(world, units, selected, -1, 0)
+                    moved, captured, victory, _ = try_move_unit(world, units, selected, -1, 0)
                     if victory:
                         stdscr.addstr(vh, 0, f"{current_player} wins! Press Q to quit."[:vw])
                         stdscr.refresh()
@@ -418,7 +418,7 @@ def run_curses(world: GameMap, p1: Player, p2: Player, units: List[Unit]) -> Non
                 if selected is None:
                     selected = select_next_unit(units, current_player, selected)
                 if selected is not None and selected.owner == current_player:
-                    moved, captured, victory = try_move_unit(world, units, selected, 1, 0)
+                    moved, captured, victory, _ = try_move_unit(world, units, selected, 1, 0)
                     if victory:
                         stdscr.addstr(vh, 0, f"{current_player} wins! Press Q to quit."[:vw])
                         stdscr.refresh()
@@ -485,7 +485,7 @@ def run_fallback(world: GameMap, p1: Player, p2: Player, units: List[Unit]) -> N
             left = board_lines[row_idx] if row_idx < len(board_lines) else ""
             right = sidebar_lines[row_idx] if row_idx < len(sidebar_lines) else ""
             print(f"{left:<{vw}} {right}")
-        sel_txt = "none" if selected is None else f"{selected.owner} A @({selected.x},{selected.y}) mp:{selected.moves_left}"
+        sel_txt = "none" if selected is None else f"{selected.owner} A @({selected.x},{selected.y}) hp:{selected.hp}/{selected.max_hp} mp:{selected.moves_left}"
         # Show city info / ETA if under selected unit
         city_info = ""
         if selected is not None:
@@ -538,7 +538,7 @@ def run_fallback(world: GameMap, p1: Player, p2: Player, units: List[Unit]) -> N
             if selected is None:
                 selected = select_next_unit(units, current_player, selected)
             if selected is not None and selected.owner == current_player:
-                moved, captured, victory = try_move_unit(world, units, selected, 0, -1)
+                moved, captured, victory, _ = try_move_unit(world, units, selected, 0, -1)
                 if victory:
                     print(f"{current_player} wins!")
                     break
@@ -548,7 +548,7 @@ def run_fallback(world: GameMap, p1: Player, p2: Player, units: List[Unit]) -> N
             if selected is None:
                 selected = select_next_unit(units, current_player, selected)
             if selected is not None and selected.owner == current_player:
-                moved, captured, victory = try_move_unit(world, units, selected, 0, 1)
+                moved, captured, victory, _ = try_move_unit(world, units, selected, 0, 1)
                 if victory:
                     print(f"{current_player} wins!")
                     break
@@ -558,7 +558,7 @@ def run_fallback(world: GameMap, p1: Player, p2: Player, units: List[Unit]) -> N
             if selected is None:
                 selected = select_next_unit(units, current_player, selected)
             if selected is not None and selected.owner == current_player:
-                moved, captured, victory = try_move_unit(world, units, selected, -1, 0)
+                moved, captured, victory, _ = try_move_unit(world, units, selected, -1, 0)
                 if victory:
                     print(f"{current_player} wins!")
                     break
@@ -568,7 +568,7 @@ def run_fallback(world: GameMap, p1: Player, p2: Player, units: List[Unit]) -> N
             if selected is None:
                 selected = select_next_unit(units, current_player, selected)
             if selected is not None and selected.owner == current_player:
-                moved, captured, victory = try_move_unit(world, units, selected, 1, 0)
+                moved, captured, victory, _ = try_move_unit(world, units, selected, 1, 0)
                 if victory:
                     print(f"{current_player} wins!")
                     break
