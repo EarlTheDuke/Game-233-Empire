@@ -6,7 +6,7 @@ from typing import Tuple
 from units import Unit
 
 
-def resolve_attack(attacker: Unit, defender: Unit) -> Tuple[bool, bool]:
+def resolve_attack(attacker: Unit, defender: Unit, attacker_hit: float = 0.55, defender_hit: float = 0.50) -> Tuple[bool, bool]:
     """
     Minimal probabilistic combat model.
     Returns (attacker_alive, defender_alive).
@@ -17,9 +17,9 @@ def resolve_attack(attacker: Unit, defender: Unit) -> Tuple[bool, bool]:
     """
     rng = random.Random()
 
-    # Base hit chances
-    attacker_hit = 0.55
-    defender_hit = 0.50
+    # Hit chances can be modified by caller (e.g., city defense bonus)
+    attacker_hit = max(0.20, min(0.80, attacker_hit))
+    defender_hit = max(0.20, min(0.80, defender_hit))
 
     # Simple exchange of blows until one drops
     while attacker.hp > 0 and defender.hp > 0:

@@ -163,7 +163,14 @@ def try_move_unit(world: GameMap, units: List[Unit], u: Unit, dx: int, dy: int) 
         if blocking.owner == u.owner:
             return False, False, False, ""  # cannot stack
         # combat
-        attacker_alive, defender_alive = resolve_attack(u, blocking)
+        # Apply city defense bonus: defender in city gets +0.10, attacker -0.10
+        a_hit = 0.55
+        d_hit = 0.50
+        cdef = city_at(world, nx, ny)
+        if cdef is not None and cdef.owner == blocking.owner:
+            a_hit -= 0.10
+            d_hit += 0.10
+        attacker_alive, defender_alive = resolve_attack(u, blocking, attacker_hit=a_hit, defender_hit=d_hit)
         if not defender_alive:
             # remove defender; move in if attacker alive
             blocking.hp = 0
@@ -221,6 +228,14 @@ def advance_production_and_spawn(world: GameMap, units: List[Unit]) -> None:
                 else:
                     # try again next turn
                     c.production_progress = c.production_cost  # stay ready
+
+    # Healing: +1 hp/turn in owned cities (cap at max_hp)
+    for u in units:
+        if not u.is_alive():
+            continue
+        c = city_at(world, u.x, u.y)
+        if c is not None and c.owner == u.owner and u.hp < u.max_hp:
+            u.hp = min(u.max_hp, u.hp + 1)
 
 
 def reset_moves_for_owner(units: List[Unit], owner: str) -> None:
