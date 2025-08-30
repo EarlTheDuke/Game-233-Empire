@@ -318,7 +318,16 @@ def run_curses(world: GameMap, p1: Player, p2: Player, units: List[Unit]) -> Non
             lines = render_view(world, view, units)
             stdscr.erase()
             for row_idx, line in enumerate(lines[:vh]):
+                # Draw map line
                 stdscr.addstr(row_idx, 0, line[:vw])
+                # Highlight selected unit tile (reverse video)
+                if selected is not None and selected.is_alive():
+                    sx, sy = selected.x - vx, selected.y - vy
+                    if sy == row_idx and 0 <= sx < vw:
+                        try:
+                            stdscr.chgat(row_idx, sx, 1, curses.A_REVERSE)
+                        except Exception:
+                            pass
                 # right-side sidebar content
                 if row_idx < len(sidebar_lines):
                     stdscr.addstr(row_idx, vw + 1, sidebar_lines[row_idx][:sidebar_w - 1])
