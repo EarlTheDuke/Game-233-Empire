@@ -166,6 +166,17 @@ def run_fallback(world: GameMap, human: Player, ai: Player, units: List[Unit]) -
 
 
 def main() -> int:
+    # Headless smoke mode for CI / quick verification
+    if "--smoke" in sys.argv:
+        world, human, ai, units = build_initial_game(width=60, height=24)
+        view: Viewport = (0, 0, min(60, world.width), min(15, world.height))
+        lines = render_view(world, view, units)
+        print("SMOKE: start")
+        for line in lines:
+            print(line)
+        print("SMOKE: end")
+        return 0
+
     world, human, ai, units = build_initial_game(width=60, height=24)
     if HAS_CURSES:
         try:
