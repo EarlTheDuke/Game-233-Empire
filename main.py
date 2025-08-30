@@ -256,7 +256,7 @@ def build_sidebar_lines(ui: str) -> List[str]:
             " N  Next unit",
             " W/A/S/D Move",
             " B  Build Army",
-            " E  End turn",
+            " Space End turn",
             " Q  Quit",
             " Pan: Arrows/HJKL",
         ]
@@ -346,7 +346,7 @@ def run_curses(world: GameMap, p1: Player, p2: Player, units: List[Unit]) -> Non
                     city_info = f" | City: Army ETA {eta}"
             status = (
                 f"P:{current_player} T:{turn_number} | Units:{len([u for u in units if u.is_alive()])} "
-                f"Sel:{sel_txt}{city_info} | Keys: N-next WASD-move Space-skip B-build E-end Q-quit | Arrows pan"
+                f"Sel:{sel_txt}{city_info} | Keys: N-next WASD-move B-build Space-end Q-quit | Arrows pan"
             )
             stdscr.addstr(vh, 0, status[:vw])
             stdscr.refresh()
@@ -428,9 +428,7 @@ def run_curses(world: GameMap, p1: Player, p2: Player, units: List[Unit]) -> Non
                                 return
                     if moved:
                         selected = select_next_unit(units, current_player, selected)
-            elif key in (ord(' '),):
-                # Skip / wait: just advance selection
-                selected = select_next_unit(units, current_player, selected)
+            # Space now ends turn (see below)
             elif key in (ord('b'), ord('B')):
                 # Set production at city under selected unit, if owned
                 if selected is not None and selected.owner == current_player:
@@ -439,7 +437,7 @@ def run_curses(world: GameMap, p1: Player, p2: Player, units: List[Unit]) -> Non
                         c.production_type = 'Army'
                         c.production_cost = 6
                         # keep progress
-            elif key in (ord('e'), ord('E')):
+            elif key in (ord(' '),):
                 # End turn: production, switch player, reset moves, check victory
                 advance_production_and_spawn(world, units)
                 # Victory check: opponent has zero cities

@@ -59,7 +59,7 @@ python main.py
   - Arrow keys or `h/j/k/l` to pan
   - `N` select next unit, `W/A/S/D` move selected unit
   - `B` set production to Army at owned city under selected unit
-  - `E` end turn (hands off to the other player)
+  - `Space` end turn (hands off to the other player)
   - `Q` quit
 - Fallback text UI commands:
   - Pan with `w/a/s/d`
@@ -121,7 +121,7 @@ Run_Game_233_Empire.bat  # Windows launcher (double-click to start)
 - Future: add unit tests for generation, fog-of-war, and combat odds.
 
 ## Controls
-- Curses UI: Pan with arrows or `h/j/k/l`; `N` next unit; `W/A/S/D` move; `B` build Army; `E` end turn; `Q` quit.
+- Curses UI: Pan with arrows or `h/j/k/l`; `N` next unit; `W/A/S/D` move; `B` build Army; `Space` end turn; `Q` quit.
 - Fallback text UI: Pan with `w/a/s/d`; `n` next unit; `i/j/k/l` move; `b` build Army; `e` end turn; `q` quit.
 
 ## Troubleshooting (Windows)
