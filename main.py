@@ -29,6 +29,7 @@ from __future__ import annotations
 import sys
 import time
 from typing import Dict, List, Optional, Tuple
+import os
 
 try:
     import curses  # type: ignore
@@ -580,7 +581,9 @@ def run_curses(world: GameMap, p1: Player, p2: Player, units: List[Unit]) -> Non
                     pass
                 curses.noecho()
                 if name:
-                    path = f"{name}.json"
+                    save_dir = os.path.join(os.getcwd(), "saved games")
+                    os.makedirs(save_dir, exist_ok=True)
+                    path = os.path.join(save_dir, f"{name}.json")
                     players_data = [
                         {"name": p1.name, "is_ai": p1.is_ai, "cities": list(p1.cities)},
                         {"name": p2.name, "is_ai": p2.is_ai, "cities": list(p2.cities)},
@@ -612,7 +615,8 @@ def run_curses(world: GameMap, p1: Player, p2: Player, units: List[Unit]) -> Non
                     pass
                 curses.noecho()
                 if name:
-                    path = f"{name}.json"
+                    save_dir = os.path.join(os.getcwd(), "saved games")
+                    path = os.path.join(save_dir, f"{name}.json")
                     data = load_full_game(path)
                     # Rehydrate map, units, players, turn
                     loaded_map = data["map"]
@@ -839,7 +843,9 @@ def run_fallback(world: GameMap, p1: Player, p2: Player, units: List[Unit]) -> N
             if len(parts) >= 2:
                 name = parts[1].strip()
                 if name:
-                    path = f"{name}.json"
+                    save_dir = os.path.join(os.getcwd(), "saved games")
+                    os.makedirs(save_dir, exist_ok=True)
+                    path = os.path.join(save_dir, f"{name}.json")
                     players_data = [
                         {"name": p1.name, "is_ai": p1.is_ai, "cities": list(p1.cities)},
                         {"name": p2.name, "is_ai": p2.is_ai, "cities": list(p2.cities)},
@@ -850,7 +856,8 @@ def run_fallback(world: GameMap, p1: Player, p2: Player, units: List[Unit]) -> N
             if len(parts) >= 2:
                 name = parts[1].strip()
                 if name:
-                    path = f"{name}.json"
+                    save_dir = os.path.join(os.getcwd(), "saved games")
+                    path = os.path.join(save_dir, f"{name}.json")
                     data = load_full_game(path)
                     loaded_map = data["map"]
                     world.width = loaded_map["width"]
