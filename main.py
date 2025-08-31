@@ -428,7 +428,7 @@ def run_curses(world: GameMap, p1: Player, p2: Player, units: List[Unit]) -> Non
                     city_info = f" | City: Army ETA {eta}"
             status = (
                 f"P:{current_player} T:{turn_number} | Units:{len([u for u in units if u.is_alive()])} "
-                f"Sel:{sel_txt}{city_info} | Keys: N-next WASD-move B-build Space-end S-save L-load Q-quit | Arrows pan"
+                f"Sel:{sel_txt}{city_info}"
             )
             stdscr.addstr(vh, 0, status[:vw])
             stdscr.refresh()
