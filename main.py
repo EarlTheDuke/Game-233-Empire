@@ -588,7 +588,14 @@ def run_curses(world: GameMap, p1: Player, p2: Player, units: List[Unit]) -> Non
                 if name:
                     save_dir = ensure_save_dir()
                     path = os.path.join(save_dir, f"{name}.json")
-                    data = load_full_game(path)
+                    try:
+                        data = load_full_game(path)
+                    except Exception as exc:
+                        stdscr.move(vh, 0)
+                        stdscr.clrtoeol()
+                        stdscr.addstr(vh, 0, f"Load failed: {exc}"[:vw])
+                        stdscr.refresh()
+                        continue
                     # Rehydrate map, units, players, turn
                     loaded_map = data["map"]
                     world.width = loaded_map["width"]
@@ -828,7 +835,11 @@ def run_fallback(world: GameMap, p1: Player, p2: Player, units: List[Unit]) -> N
                 if name:
                     save_dir = ensure_save_dir()
                     path = os.path.join(save_dir, f"{name}.json")
-                    data = load_full_game(path)
+                    try:
+                        data = load_full_game(path)
+                    except Exception as exc:
+                        print(f"Load failed: {exc}")
+                        continue
                     loaded_map = data["map"]
                     world.width = loaded_map["width"]
                     world.height = loaded_map["height"]

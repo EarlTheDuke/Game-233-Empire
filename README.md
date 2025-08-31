@@ -56,9 +56,10 @@ pip install windows-curses
 python main.py
 ```
 - Curses UI keys:
-  - Arrow keys or `h/j/k/l` to pan
-  - `N` select next unit, `W/A/S/D` move selected unit
+  - Arrow keys move selected unit; `h/j/k/l` pan the camera
+  - `N` select next unit
   - `B` set production to Army at owned city under selected unit
+  - `S` save (prompts for name); `O` load (prompts and lists saves)
   - `Space` end turn (hands off to the other player)
   - `Q` quit
 - Fallback text UI commands:
@@ -121,30 +122,5 @@ Run_Game_233_Empire.bat  # Windows launcher (double-click to start)
 - Future: add unit tests for generation, fog-of-war, and combat odds.
 
 ## Controls
-- Curses UI: Pan with arrows or `h/j/k/l`; `N` next unit; `W/A/S/D` move; `B` build Army; `Space` end turn; `Q` quit.
-- Fallback text UI: Pan with `w/a/s/d`; `n` next unit; `i/j/k/l` move; `b` build Army; `e` end turn; `q` quit.
-
-## Troubleshooting (Windows)
-- Window opens and closes instantly when double-clicking:
-  - Run from PowerShell to see messages:
-    ```powershell
-    cd "C:\Users\sugar\Desktop\ALL AI GAMES\Projects in prgress\Game 233 Empire"
-    .\Run_Game_233_Empire.bat
-    ```
-  - Check `last_run.log` for errors.
-- Python not found:
-  - Install Python from `https://www.python.org/` and ensure it’s on PATH, or use the `py` launcher.
-- Arrow keys don’t work / no colors:
-  - Install `windows-curses`:
-    ```powershell
-    py -m pip install --user windows-curses
-    ```
-  - Then run `python main.py` again.
-
-## Future Extensions
-- Multiplayer via sockets or hotseat with turn files.
-- Richer UI with Pygame; zoomed maps; mouse support.
-- Scenario generation and map seeds.
-
-## License
-- TBD (choose MIT or similar for permissive use).
+- Curses UI: Arrow keys move; `h/j/k/l` pan; `N` next unit; `B` build Army; `S` save; `O` load; `Space` end turn; `Q` quit.
+- Fallback text UI: Pan with `w/a/s/d`; `n` next unit; `i/j/k/l` move; `b` build Army; `e` end turn; `
