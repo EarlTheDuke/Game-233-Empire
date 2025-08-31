@@ -522,11 +522,21 @@ def run_curses(world: GameMap, p1: Player, p2: Player, units: List[Unit]) -> Non
                         k2 = stdscr.getch()
                         if k2 in (ord('q'), ord('Q')):
                             return
-                # Switch player
-                # Handoff prompt
-                stdscr.addstr(vh, 0, f"Turn over for {current_player}. Hand off to {opponent}. Press any key..."[:vw])
+                # Handoff screen: hide map and wait for SPACE to start next turn
+                stdscr.erase()
+                handoff_msg1 = f"Turn over for {current_player}. Hand off to {opponent}."
+                handoff_msg2 = "Press SPACE to start your turn."
+                # Center messages
+                msg_y = vh // 2
+                msg_x1 = max(0, (vw - len(handoff_msg1)) // 2)
+                msg_x2 = max(0, (vw - len(handoff_msg2)) // 2)
+                stdscr.addstr(msg_y, msg_x1, handoff_msg1[:vw])
+                stdscr.addstr(msg_y + 1, msg_x2, handoff_msg2[:vw])
                 stdscr.refresh()
-                stdscr.getch()
+                while True:
+                    k2 = stdscr.getch()
+                    if k2 == ord(' '):
+                        break
                 current_player = opponent
                 turn_number += 1
                 reset_moves_for_owner(units, current_player)
