@@ -357,6 +357,11 @@ def center_view_on(world: GameMap, vw: int, vh: int, target_x: int, target_y: in
     return vx, vy
 
 
+def ensure_save_dir() -> str:
+    save_dir = os.path.join(os.getcwd(), "saved games")
+    os.makedirs(save_dir, exist_ok=True)
+    return save_dir
+
 def run_curses(world: GameMap, p1: Player, p2: Player, units: List[Unit]) -> None:
     assert HAS_CURSES and curses is not None
 
@@ -581,8 +586,7 @@ def run_curses(world: GameMap, p1: Player, p2: Player, units: List[Unit]) -> Non
                     pass
                 curses.noecho()
                 if name:
-                    save_dir = os.path.join(os.getcwd(), "saved games")
-                    os.makedirs(save_dir, exist_ok=True)
+                    save_dir = ensure_save_dir()
                     path = os.path.join(save_dir, f"{name}.json")
                     players_data = [
                         {"name": p1.name, "is_ai": p1.is_ai, "cities": list(p1.cities)},
@@ -598,6 +602,15 @@ def run_curses(world: GameMap, p1: Player, p2: Player, units: List[Unit]) -> Non
                 stdscr.move(vh, 0)
                 stdscr.clrtoeol()
                 stdscr.addstr(vh, 0, prompt[:vw])
+                # List available saves one line above
+                try:
+                    list_y = max(0, vh - 1)
+                    save_dir = ensure_save_dir()
+                    saves = [fn[:-5] for fn in os.listdir(save_dir) if fn.lower().endswith('.json')]
+                    list_line = "Saves: " + (" ".join(sorted(saves)) if saves else "(none)")
+                    stdscr.addstr(list_y, 0, list_line[:vw])
+                except Exception:
+                    pass
                 stdscr.refresh()
                 curses.echo()
                 try:
@@ -615,7 +628,7 @@ def run_curses(world: GameMap, p1: Player, p2: Player, units: List[Unit]) -> Non
                     pass
                 curses.noecho()
                 if name:
-                    save_dir = os.path.join(os.getcwd(), "saved games")
+                    save_dir = ensure_save_dir()
                     path = os.path.join(save_dir, f"{name}.json")
                     data = load_full_game(path)
                     # Rehydrate map, units, players, turn
@@ -843,8 +856,7 @@ def run_fallback(world: GameMap, p1: Player, p2: Player, units: List[Unit]) -> N
             if len(parts) >= 2:
                 name = parts[1].strip()
                 if name:
-                    save_dir = os.path.join(os.getcwd(), "saved games")
-                    os.makedirs(save_dir, exist_ok=True)
+                    save_dir = ensure_save_dir()
                     path = os.path.join(save_dir, f"{name}.json")
                     players_data = [
                         {"name": p1.name, "is_ai": p1.is_ai, "cities": list(p1.cities)},
@@ -856,7 +868,7 @@ def run_fallback(world: GameMap, p1: Player, p2: Player, units: List[Unit]) -> N
             if len(parts) >= 2:
                 name = parts[1].strip()
                 if name:
-                    save_dir = os.path.join(os.getcwd(), "saved games")
+                    save_dir = ensure_save_dir()
                     path = os.path.join(save_dir, f"{name}.json")
                     data = load_full_game(path)
                     loaded_map = data["map"]
@@ -894,6 +906,11 @@ def run_fallback(world: GameMap, p1: Player, p2: Player, units: List[Unit]) -> N
                     sel = select_next_unit(units, current_player, None)
                     if sel is not None:
                         vx, vy = center_view_on(world, vw, vh, sel.x, sel.y)
+            else:
+                # List available saves
+                save_dir = ensure_save_dir()
+                saves = [fn[:-5] for fn in os.listdir(save_dir) if fn.lower().endswith('.json')]
+                print("Available saves:", ", ".join(sorted(saves)) if saves else "(none)")
         print("\n" * 1)
 
 
