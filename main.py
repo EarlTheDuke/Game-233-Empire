@@ -45,6 +45,10 @@ from combat import resolve_attack
 
 Viewport = Tuple[int, int, int, int]  # x, y, width, height
 
+# Visibility radii (can be tuned)
+UNIT_SIGHT = 3
+CITY_SIGHT = 5
+
 
 def clamp(value: int, low: int, high: int) -> int:
     if value < low:
@@ -92,8 +96,7 @@ def build_initial_game(width: int = 60, height: int = 24) -> Tuple[GameMap, Play
     for u in units:
         u.reset_moves()
 
-    # Hot-seat: reveal full map
-    world.reveal_all()
+    # Per-player FoW will be initialized in the UI entry point
 
     # Initialize default production values for owned cities (optional)
     for c in world.cities:
@@ -105,9 +108,22 @@ def build_initial_game(width: int = 60, height: int = 24) -> Tuple[GameMap, Play
     return world, p1, p2, units
 
 
-def render_view(world: GameMap, view: Viewport, units: List[Unit]) -> List[str]:
-    base = world.render(view)
-    return overlay_units_on_buffer(base, view, units)
+def render_view(world: GameMap, view: Viewport, units: List[Unit], active_player: Optional[str] = None) -> List[str]:
+    base = world.render(view, active_player=active_player)
+    if active_player is None:
+        return overlay_units_on_buffer(base, view, units)
+    # Filter enemy units by visibility
+    vis = world.visible.get(active_player)
+    filtered: List[Unit] = []
+    for u in units:
+        if not u.is_alive():
+            continue
+        if u.owner == active_player:
+            filtered.append(u)
+        else:
+            if vis is not None and 0 <= u.y < world.height and 0 <= u.x < world.width and vis[u.y][u.x]:
+                filtered.append(u)
+    return overlay_units_on_buffer(base, view, filtered)
 
 
 # --- Game helpers for hot-seat ---
@@ -266,6 +282,17 @@ def select_next_unit(units: List[Unit], owner: str, current: Optional[Unit]) -> 
     return own_units[(idx + 1) % len(own_units)]
 
 
+def recompute_visibility(world: GameMap, owner: str, units: List[Unit]) -> None:
+    # Clear and mark for the owner based on cities and units
+    world.clear_visible_for(owner)
+    for c in world.cities:
+        if c.owner == owner:
+            world.mark_visible_circle(owner, c.x, c.y, radius=CITY_SIGHT)
+    for u in units:
+        if u.owner == owner and u.is_alive():
+            world.mark_visible_circle(owner, u.x, u.y, radius=UNIT_SIGHT)
+
+
 def build_sidebar_lines(ui: str) -> List[str]:
     # ui: 'curses' or 'fallback' for key differences
     if ui == 'curses':
@@ -336,6 +363,16 @@ def run_curses(world: GameMap, p1: Player, p2: Player, units: List[Unit]) -> Non
         vh = max(10, min(world.height, max_y - 1))
         vx, vy = 0, 0
         reset_moves_for_owner(units, current_player)
+        # Initialize per-player FoW
+        world.init_fow([p1.name, p2.name])
+        # Seed exploration around all owned cities and units for both players
+        for c in world.cities:
+            if c.owner in (p1.name, p2.name):
+                world.mark_visible_circle(c.owner, c.x, c.y, radius=CITY_SIGHT)
+        for u in units:
+            world.mark_visible_circle(u.owner, u.x, u.y, radius=UNIT_SIGHT)
+        # Recompute for current player specifically
+        recompute_visibility(world, current_player, units)
         # Center on first ready unit for current player
         selected = select_next_unit(units, current_player, None)
         if selected is not None:
@@ -343,7 +380,7 @@ def run_curses(world: GameMap, p1: Player, p2: Player, units: List[Unit]) -> Non
 
         while True:
             view: Viewport = (vx, vy, vw, vh)
-            lines = render_view(world, view, units)
+            lines = render_view(world, view, units, active_player=current_player)
             stdscr.erase()
             for row_idx, line in enumerate(lines[:vh]):
                 # Draw map line
@@ -412,6 +449,8 @@ def run_curses(world: GameMap, p1: Player, p2: Player, units: List[Unit]) -> Non
                             if k2 in (ord('q'), ord('Q')):
                                 return
                     if moved:
+                        # update FoW after move
+                        recompute_visibility(world, current_player, units)
                         # auto-select next ready unit
                         selected = select_next_unit(units, current_player, selected)
             elif key in (ord('s'), ord('S')):
@@ -427,6 +466,7 @@ def run_curses(world: GameMap, p1: Player, p2: Player, units: List[Unit]) -> Non
                             if k2 in (ord('q'), ord('Q')):
                                 return
                     if moved:
+                        recompute_visibility(world, current_player, units)
                         selected = select_next_unit(units, current_player, selected)
             elif key in (ord('a'), ord('A')):
                 if selected is None:
@@ -441,6 +481,7 @@ def run_curses(world: GameMap, p1: Player, p2: Player, units: List[Unit]) -> Non
                             if k2 in (ord('q'), ord('Q')):
                                 return
                     if moved:
+                        recompute_visibility(world, current_player, units)
                         selected = select_next_unit(units, current_player, selected)
             elif key in (ord('d'), ord('D')):
                 if selected is None:
@@ -455,6 +496,7 @@ def run_curses(world: GameMap, p1: Player, p2: Player, units: List[Unit]) -> Non
                             if k2 in (ord('q'), ord('Q')):
                                 return
                     if moved:
+                        recompute_visibility(world, current_player, units)
                         selected = select_next_unit(units, current_player, selected)
             # Space now ends turn (see below)
             elif key in (ord('b'), ord('B')):
@@ -491,6 +533,7 @@ def run_curses(world: GameMap, p1: Player, p2: Player, units: List[Unit]) -> Non
                 selected = select_next_unit(units, current_player, None)
                 if selected is not None:
                     vx, vy = center_view_on(world, vw, vh, selected.x, selected.y)
+                recompute_visibility(world, current_player, units)
 
     curses.wrapper(_main)
 
@@ -507,6 +550,14 @@ def run_fallback(world: GameMap, p1: Player, p2: Player, units: List[Unit]) -> N
     turn_number = 1
     selected: Optional[Unit] = None
     reset_moves_for_owner(units, current_player)
+    # Init per-player FoW
+    world.init_fow([p1.name, p2.name])
+    for c in world.cities:
+        if c.owner in (p1.name, p2.name):
+            world.mark_visible_circle(c.owner, c.x, c.y, radius=CITY_SIGHT)
+    for u in units:
+        world.mark_visible_circle(u.owner, u.x, u.y, radius=UNIT_SIGHT)
+    recompute_visibility(world, current_player, units)
     # Center on first ready unit on start
     selected = select_next_unit(units, current_player, None)
     if selected is not None:
@@ -514,7 +565,7 @@ def run_fallback(world: GameMap, p1: Player, p2: Player, units: List[Unit]) -> N
     print("Text UI. Commands: n=next, wasd=move, b=build, e=end, q=quit; arrows: pan")
     while True:
         view: Viewport = (vx, vy, vw, vh)
-        board_lines = render_view(world, view, units)
+        board_lines = render_view(world, view, units, active_player=current_player)
         for row_idx in range(vh):
             left = board_lines[row_idx] if row_idx < len(board_lines) else ""
             right = sidebar_lines[row_idx] if row_idx < len(sidebar_lines) else ""
@@ -569,6 +620,7 @@ def run_fallback(world: GameMap, p1: Player, p2: Player, units: List[Unit]) -> N
             selected = select_next_unit(units, current_player, None)
             if selected is not None:
                 vx, vy = center_view_on(world, vw, vh, selected.x, selected.y)
+            recompute_visibility(world, current_player, units)
         # Movement commands and skip
         if cmd in ('i',):
             if selected is None:
@@ -579,6 +631,7 @@ def run_fallback(world: GameMap, p1: Player, p2: Player, units: List[Unit]) -> N
                     print(f"{current_player} wins!")
                     break
                 if moved:
+                    recompute_visibility(world, current_player, units)
                     selected = select_next_unit(units, current_player, selected)
         elif cmd in ('k',):
             if selected is None:
@@ -589,6 +642,7 @@ def run_fallback(world: GameMap, p1: Player, p2: Player, units: List[Unit]) -> N
                     print(f"{current_player} wins!")
                     break
                 if moved:
+                    recompute_visibility(world, current_player, units)
                     selected = select_next_unit(units, current_player, selected)
         elif cmd in ('j',):
             if selected is None:
@@ -599,6 +653,7 @@ def run_fallback(world: GameMap, p1: Player, p2: Player, units: List[Unit]) -> N
                     print(f"{current_player} wins!")
                     break
                 if moved:
+                    recompute_visibility(world, current_player, units)
                     selected = select_next_unit(units, current_player, selected)
         elif cmd in ('l',):
             if selected is None:
@@ -609,6 +664,7 @@ def run_fallback(world: GameMap, p1: Player, p2: Player, units: List[Unit]) -> N
                     print(f"{current_player} wins!")
                     break
                 if moved:
+                    recompute_visibility(world, current_player, units)
                     selected = select_next_unit(units, current_player, selected)
         elif cmd in (' ', 'skip', 'wait'):
             selected = select_next_unit(units, current_player, selected)

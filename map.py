@@ -3,7 +3,7 @@ from __future__ import annotations
 import math
 import random
 from dataclasses import dataclass
-from typing import List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 
 class Terrain:
@@ -37,7 +37,11 @@ class GameMap:
         self.height = height
         self.tiles: List[List[str]] = [[Terrain.OCEAN for _ in range(width)] for _ in range(height)]
         self.cities: List[City] = []
+        # Legacy fog retained for reference; per-player FoW below
         self.fog: List[List[bool]] = [[True for _ in range(width)] for _ in range(height)]
+        # Per-player fog of war
+        self.explored: Dict[str, List[List[bool]]] = {}
+        self.visible: Dict[str, List[List[bool]]] = {}
 
     # --- Generation ---
     def generate(self, seed: Optional[int] = None, land_target: float = 0.55) -> None:
@@ -190,20 +194,61 @@ class GameMap:
             for x in range(self.width):
                 self.fog[y][x] = False
 
+    # --- Per-player FoW helpers ---
+    def init_fow(self, players: List[str]) -> None:
+        self.explored = {
+            p: [[False for _ in range(self.width)] for _ in range(self.height)] for p in players
+        }
+        self.visible = {
+            p: [[False for _ in range(self.width)] for _ in range(self.height)] for p in players
+        }
+
+    def clear_visible_for(self, player: str) -> None:
+        if player not in self.visible:
+            return
+        v = self.visible[player]
+        for y in range(self.height):
+            row = v[y]
+            for x in range(self.width):
+                row[x] = False
+
+    def mark_visible_circle(self, player: str, x: int, y: int, radius: int) -> None:
+        if player not in self.visible or player not in self.explored:
+            return
+        r2 = radius * radius
+        for yy in range(max(0, y - radius), min(self.height, y + radius + 1)):
+            for xx in range(max(0, x - radius), min(self.width, x + radius + 1)):
+                if (xx - x) * (xx - x) + (yy - y) * (yy - y) <= r2:
+                    self.visible[player][yy][xx] = True
+                    self.explored[player][yy][xx] = True
+
     # --- Rendering ---
-    def render(self, view: Tuple[int, int, int, int]) -> List[str]:
+    def render(self, view: Tuple[int, int, int, int], active_player: Optional[str] = None) -> List[str]:
         vx, vy, vw, vh = view
         lines: List[str] = []
         city_map = {(c.x, c.y): c for c in self.cities}
         for y in range(vy, min(self.height, vy + vh)):
             row_chars: List[str] = []
             for x in range(vx, min(self.width, vx + vw)):
-                if self.fog[y][x]:
-                    row_chars.append(' ')
-                    continue
-                ch = self.tiles[y][x]
-                if (x, y) in city_map:
-                    ch = city_map[(x, y)].symbol()
+                # Per-player FoW if active_player provided
+                if active_player is not None and active_player in self.explored and active_player in self.visible:
+                    if not self.explored[active_player][y][x]:
+                        row_chars.append(' ')
+                        continue
+                    ch = self.tiles[y][x]
+                    if (x, y) in city_map:
+                        if self.visible[active_player][y][x]:
+                            ch = city_map[(x, y)].symbol()
+                        else:
+                            ch = 'o'  # unknown ownership city
+                else:
+                    # Legacy single-fog behavior
+                    if self.fog[y][x]:
+                        row_chars.append(' ')
+                        continue
+                    ch = self.tiles[y][x]
+                    if (x, y) in city_map:
+                        ch = city_map[(x, y)].symbol()
                 row_chars.append(ch)
             lines.append("".join(row_chars))
         return lines
