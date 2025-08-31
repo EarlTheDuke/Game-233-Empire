@@ -40,7 +40,7 @@ class GameMap:
         self.fog: List[List[bool]] = [[True for _ in range(width)] for _ in range(height)]
 
     # --- Generation ---
-    def generate(self, seed: Optional[int] = None, land_target: float = 0.65) -> None:
+    def generate(self, seed: Optional[int] = None, land_target: float = 0.55) -> None:
         rng = random.Random(seed)
         # Start with random noise
         noise: List[List[float]] = [[rng.random() for _ in range(self.width)] for _ in range(self.height)]
