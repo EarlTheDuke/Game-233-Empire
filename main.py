@@ -318,7 +318,7 @@ def build_sidebar_lines(ui: str) -> List[str]:
             " N  Next unit",
             " Arrows Move unit",
             " B  Build Army",
-            " S  Save, L Load",
+            " S  Save, O Load",
             " Space End turn",
             " Q  Quit",
             " Pan: H/J/K/L",
@@ -593,7 +593,7 @@ def run_curses(world: GameMap, p1: Player, p2: Player, units: List[Unit]) -> Non
                     stdscr.clrtoeol()
                     stdscr.addstr(vh, 0, f"Saved to {path}"[:vw])
                     stdscr.refresh()
-            elif key in (ord('l'), ord('L')):
+            elif key in (ord('o'), ord('O')):
                 prompt = "Load name (no extension): "
                 stdscr.move(vh, 0)
                 stdscr.clrtoeol()
