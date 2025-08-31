@@ -40,7 +40,7 @@ class GameMap:
         self.fog: List[List[bool]] = [[True for _ in range(width)] for _ in range(height)]
 
     # --- Generation ---
-    def generate(self, seed: Optional[int] = None, land_target: float = 0.45) -> None:
+    def generate(self, seed: Optional[int] = None, land_target: float = 0.65) -> None:
         rng = random.Random(seed)
         # Start with random noise
         noise: List[List[float]] = [[rng.random() for _ in range(self.width)] for _ in range(self.height)]
@@ -68,7 +68,7 @@ class GameMap:
                         new_noise[y][x] = max(0.0, noise[y][x] - 0.2)
             noise = new_noise
 
-        # Threshold to achieve approximate land ratio
+        # Threshold to achieve approximate land ratio (bias toward more land for easier contact)
         flat = [v for row in noise for v in row]
         flat_sorted = sorted(flat)
         idx = int((1.0 - land_target) * len(flat_sorted))
@@ -81,6 +81,8 @@ class GameMap:
         # Clean tiny lakes/peninsulas with a final pass
         for _ in range(2):
             self._smooth_terrain()
+        # Ensure a single connected landmass (carve corridors between components)
+        self._ensure_connected_land()
 
     def _smooth_terrain(self) -> None:
         def neighbors(y: int, x: int) -> Tuple[int, int]:
@@ -105,6 +107,55 @@ class GameMap:
                     self.tiles[y][x] = Terrain.LAND
                 elif water >= 5:
                     self.tiles[y][x] = Terrain.OCEAN
+
+    def _ensure_connected_land(self) -> None:
+        # Identify connected components of land tiles and connect them to the largest
+        visited = [[False for _ in range(self.width)] for _ in range(self.height)]
+        components: List[List[Tuple[int, int]]] = []
+
+        def bfs(start_y: int, start_x: int) -> List[Tuple[int, int]]:
+            q: List[Tuple[int, int]] = [(start_y, start_x)]
+            visited[start_y][start_x] = True
+            comp: List[Tuple[int, int]] = [(start_x, start_y)]
+            while q:
+                cy, cx = q.pop(0)
+                for dy, dx in ((1,0),(-1,0),(0,1),(0,-1)):
+                    ny, nx = cy + dy, cx + dx
+                    if 0 <= ny < self.height and 0 <= nx < self.width and not visited[ny][nx]:
+                        if self.tiles[ny][nx] == Terrain.LAND:
+                            visited[ny][nx] = True
+                            q.append((ny, nx))
+                            comp.append((nx, ny))
+            return comp
+
+        for y in range(self.height):
+            for x in range(self.width):
+                if not visited[y][x] and self.tiles[y][x] == Terrain.LAND:
+                    components.append(bfs(y, x))
+
+        if len(components) <= 1:
+            return
+
+        # Choose largest component as the main landmass
+        components.sort(key=lambda c: len(c), reverse=True)
+        main_comp = components[0]
+        main_rep_x, main_rep_y = main_comp[0]
+
+        def carve_path(x0: int, y0: int, x1: int, y1: int) -> None:
+            x, y = x0, y0
+            # Manhattan carve from (x0,y0) to (x1,y1)
+            while x != x1:
+                self.tiles[y][x] = Terrain.LAND
+                x += 1 if x1 > x else -1
+            while y != y1:
+                self.tiles[y][x] = Terrain.LAND
+                y += 1 if y1 > y else -1
+            self.tiles[y][x] = Terrain.LAND
+
+        # Connect each smaller component to the main landmass via simple corridor
+        for comp in components[1:]:
+            cx, cy = comp[0]
+            carve_path(cx, cy, main_rep_x, main_rep_y)
 
     def place_cities(self, count: int = 20, min_separation: int = 3) -> None:
         land_positions = [(x, y) for y in range(self.height) for x in range(self.width) if self.tiles[y][x] == Terrain.LAND]
