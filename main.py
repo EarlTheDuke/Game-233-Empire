@@ -544,48 +544,6 @@ def run_curses(world: GameMap, p1: Player, p2: Player, units: List[Unit]) -> Non
                     pass
                 curses.noecho()
                 if name:
-                    path = f"{name}.json"
-                    players_data = [
-                        {"name": p1.name, "is_ai": p1.is_ai, "cities": list(p1.cities)},
-                        {"name": p2.name, "is_ai": p2.is_ai, "cities": list(p2.cities)},
-                    ]
-                    save_full_game(path, world, units, players_data, turn_number, current_player)
-                    stdscr.move(vh, 0)
-                    stdscr.clrtoeol()
-                    stdscr.addstr(vh, 0, f"Saved to {path}"[:vw])
-                    stdscr.refresh()
-            # Space now ends turn (see below)
-            elif key in (ord('b'), ord('B')):
-                # Set production at city under selected unit, if owned
-                if selected is not None and selected.owner == current_player:
-                    c = city_at(world, selected.x, selected.y)
-                    if c is not None and c.owner == current_player:
-                        c.production_type = 'Army'
-                        c.production_cost = 8
-                        # keep progress
-            elif key in (ord('s'), ord('S')):
-                # Save game prompt
-                prompt = "Save as (no extension): "
-                stdscr.move(vh, 0)
-                stdscr.clrtoeol()
-                stdscr.addstr(vh, 0, prompt[:vw])
-                stdscr.refresh()
-                curses.echo()
-                try:
-                    curses.curs_set(1)
-                except Exception:
-                    pass
-                maxlen = max(1, min(50, vw - len(prompt) - 1))
-                try:
-                    name = stdscr.getstr(vh, min(vw - 1, len(prompt)), maxlen).decode('utf-8').strip()
-                except Exception:
-                    name = ""
-                try:
-                    curses.curs_set(0)
-                except Exception:
-                    pass
-                curses.noecho()
-                if name:
                     save_dir = ensure_save_dir()
                     path = os.path.join(save_dir, f"{name}.json")
                     players_data = [
