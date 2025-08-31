@@ -560,13 +560,17 @@ def run_curses(world: GameMap, p1: Player, p2: Player, units: List[Unit]) -> Non
                 stdscr.move(vh, 0)
                 stdscr.clrtoeol()
                 stdscr.addstr(vh, 0, prompt[:vw])
-                # List available saves one line above
+                # List recent saves above the prompt (most recent first)
                 try:
-                    list_y = max(0, vh - 1)
                     save_dir = ensure_save_dir()
-                    saves = [fn[:-5] for fn in os.listdir(save_dir) if fn.lower().endswith('.json')]
-                    list_line = "Saves: " + (" ".join(sorted(saves)) if saves else "(none)")
-                    stdscr.addstr(list_y, 0, list_line[:vw])
+                    files = [fn for fn in os.listdir(save_dir) if fn.lower().endswith('.json')]
+                    files_sorted = sorted(files, key=lambda fn: os.path.getmtime(os.path.join(save_dir, fn)), reverse=True)
+                    display = [fn[:-5] for fn in files_sorted[:10]]
+                    header = "Recent saves:"
+                    lines = [header] + (display if display else ["(none)"])
+                    start_y = max(0, vh - 1 - len(lines))
+                    for idx, text in enumerate(lines):
+                        stdscr.addstr(start_y + idx, 0, text[:vw])
                 except Exception:
                     pass
                 stdscr.refresh()
