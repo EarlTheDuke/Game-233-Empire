@@ -525,10 +525,25 @@ def run_curses(world: GameMap, p1: Player, p2: Player, units: List[Unit]) -> Non
                         # keep progress
             elif key in (ord('s'), ord('S')):
                 # Save game prompt
-                stdscr.addstr(vh, 0, "Save as filename (without extension): "[:vw])
+                prompt = "Save as (no extension): "
+                stdscr.move(vh, 0)
+                stdscr.clrtoeol()
+                stdscr.addstr(vh, 0, prompt[:vw])
                 stdscr.refresh()
                 curses.echo()
-                name = stdscr.getstr(vh, min(vw - 1, 35), 50).decode('utf-8').strip()
+                try:
+                    curses.curs_set(1)
+                except Exception:
+                    pass
+                maxlen = max(1, min(50, vw - len(prompt) - 1))
+                try:
+                    name = stdscr.getstr(vh, min(vw - 1, len(prompt)), maxlen).decode('utf-8').strip()
+                except Exception:
+                    name = ""
+                try:
+                    curses.curs_set(0)
+                except Exception:
+                    pass
                 curses.noecho()
                 if name:
                     path = f"{name}.json"
@@ -537,11 +552,30 @@ def run_curses(world: GameMap, p1: Player, p2: Player, units: List[Unit]) -> Non
                         {"name": p2.name, "is_ai": p2.is_ai, "cities": list(p2.cities)},
                     ]
                     save_full_game(path, world, units, players_data, turn_number, current_player)
+                    stdscr.move(vh, 0)
+                    stdscr.clrtoeol()
+                    stdscr.addstr(vh, 0, f"Saved to {path}"[:vw])
+                    stdscr.refresh()
             elif key in (ord('l'), ord('L')):
-                stdscr.addstr(vh, 0, "Load filename (without extension): "[:vw])
+                prompt = "Load name (no extension): "
+                stdscr.move(vh, 0)
+                stdscr.clrtoeol()
+                stdscr.addstr(vh, 0, prompt[:vw])
                 stdscr.refresh()
                 curses.echo()
-                name = stdscr.getstr(vh, min(vw - 1, 33), 50).decode('utf-8').strip()
+                try:
+                    curses.curs_set(1)
+                except Exception:
+                    pass
+                maxlen = max(1, min(50, vw - len(prompt) - 1))
+                try:
+                    name = stdscr.getstr(vh, min(vw - 1, len(prompt)), maxlen).decode('utf-8').strip()
+                except Exception:
+                    name = ""
+                try:
+                    curses.curs_set(0)
+                except Exception:
+                    pass
                 curses.noecho()
                 if name:
                     path = f"{name}.json"
