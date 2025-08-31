@@ -597,7 +597,7 @@ def run_fallback(world: GameMap, p1: Player, p2: Player, units: List[Unit]) -> N
 def main() -> int:
     # Headless smoke mode for CI / quick verification
     if "--smoke" in sys.argv:
-        world, human, ai, units = build_initial_game(width=60, height=24)
+        world, human, ai, units = build_initial_game(width=120, height=48)
         view: Viewport = (0, 0, min(60, world.width), min(15, world.height))
         lines = render_view(world, view, units)
         print("SMOKE: start")
@@ -606,7 +606,7 @@ def main() -> int:
         print("SMOKE: end")
         return 0
 
-    world, p1, p2, units = build_initial_game(width=60, height=24)
+    world, p1, p2, units = build_initial_game(width=120, height=48)
     if HAS_CURSES:
         try:
             run_curses(world, p1, p2, units)
