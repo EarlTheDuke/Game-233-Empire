@@ -156,6 +156,9 @@ def try_move_unit(world: GameMap, units: List[Unit], u: Unit, dx: int, dy: int) 
     if not u.can_move():
         return False, False, False, ""
     nx, ny = u.x + dx, u.y + dy
+    # Prevent moving off-map: if target is out of bounds, ignore
+    if not (0 <= nx < world.width and 0 <= ny < world.height):
+        return False, False, False, ""
     if not is_land(world, nx, ny):
         return False, False, False, ""
     blocking = unit_at(units, nx, ny)
