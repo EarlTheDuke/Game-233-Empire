@@ -315,11 +315,12 @@ def build_sidebar_lines(ui: str) -> List[str]:
         commands = [
             "Commands:",
             " N  Next unit",
-            " W/A/S/D Move",
+            " Arrows Move unit",
             " B  Build Army",
+            " S  Save, L Load",
             " Space End turn",
             " Q  Quit",
-            " Pan: Arrows/HJKL",
+            " Pan: H/J/K/L",
         ]
     else:
         commands = [
@@ -452,7 +453,7 @@ def run_curses(world: GameMap, p1: Player, p2: Player, units: List[Unit]) -> Non
                 vy = clamp(vy + 1, 0, max(0, world.height - vh))
             elif key in (ord('n'), ord('N')):
                 selected = select_next_unit(units, current_player, selected)
-            elif key in (ord('w'), ord('W')):
+            elif key == curses.KEY_UP:
                 if selected is None:
                     selected = select_next_unit(units, current_player, selected)
                 if selected is not None and selected.owner == current_player:
@@ -469,7 +470,7 @@ def run_curses(world: GameMap, p1: Player, p2: Player, units: List[Unit]) -> Non
                         recompute_visibility(world, current_player, units)
                         # auto-select next ready unit
                         selected = select_next_unit(units, current_player, selected)
-            elif key in (ord('s'), ord('S')):
+            elif key == curses.KEY_DOWN:
                 if selected is None:
                     selected = select_next_unit(units, current_player, selected)
                 if selected is not None and selected.owner == current_player:
@@ -484,7 +485,7 @@ def run_curses(world: GameMap, p1: Player, p2: Player, units: List[Unit]) -> Non
                     if moved:
                         recompute_visibility(world, current_player, units)
                         selected = select_next_unit(units, current_player, selected)
-            elif key in (ord('a'), ord('A')):
+            elif key == curses.KEY_LEFT:
                 if selected is None:
                     selected = select_next_unit(units, current_player, selected)
                 if selected is not None and selected.owner == current_player:
@@ -499,7 +500,7 @@ def run_curses(world: GameMap, p1: Player, p2: Player, units: List[Unit]) -> Non
                     if moved:
                         recompute_visibility(world, current_player, units)
                         selected = select_next_unit(units, current_player, selected)
-            elif key in (ord('d'), ord('D')):
+            elif key == curses.KEY_RIGHT:
                 if selected is None:
                     selected = select_next_unit(units, current_player, selected)
                 if selected is not None and selected.owner == current_player:
@@ -514,6 +515,39 @@ def run_curses(world: GameMap, p1: Player, p2: Player, units: List[Unit]) -> Non
                     if moved:
                         recompute_visibility(world, current_player, units)
                         selected = select_next_unit(units, current_player, selected)
+            elif key in (ord('s'), ord('S')):
+                # Save game prompt (moved after arrow handling)
+                prompt = "Save as (no extension): "
+                stdscr.move(vh, 0)
+                stdscr.clrtoeol()
+                stdscr.addstr(vh, 0, prompt[:vw])
+                stdscr.refresh()
+                curses.echo()
+                try:
+                    curses.curs_set(1)
+                except Exception:
+                    pass
+                maxlen = max(1, min(50, vw - len(prompt) - 1))
+                try:
+                    name = stdscr.getstr(vh, min(vw - 1, len(prompt)), maxlen).decode('utf-8').strip()
+                except Exception:
+                    name = ""
+                try:
+                    curses.curs_set(0)
+                except Exception:
+                    pass
+                curses.noecho()
+                if name:
+                    path = f"{name}.json"
+                    players_data = [
+                        {"name": p1.name, "is_ai": p1.is_ai, "cities": list(p1.cities)},
+                        {"name": p2.name, "is_ai": p2.is_ai, "cities": list(p2.cities)},
+                    ]
+                    save_full_game(path, world, units, players_data, turn_number, current_player)
+                    stdscr.move(vh, 0)
+                    stdscr.clrtoeol()
+                    stdscr.addstr(vh, 0, f"Saved to {path}"[:vw])
+                    stdscr.refresh()
             # Space now ends turn (see below)
             elif key in (ord('b'), ord('B')):
                 # Set production at city under selected unit, if owned
