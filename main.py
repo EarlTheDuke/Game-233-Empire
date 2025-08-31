@@ -41,6 +41,7 @@ from map import GameMap, City
 from units import Army, Unit
 from player import Player
 from combat import resolve_attack
+from savegame import save_full_game, load_full_game
 
 
 Viewport = Tuple[int, int, int, int]  # x, y, width, height
@@ -426,7 +427,7 @@ def run_curses(world: GameMap, p1: Player, p2: Player, units: List[Unit]) -> Non
                     city_info = f" | City: Army ETA {eta}"
             status = (
                 f"P:{current_player} T:{turn_number} | Units:{len([u for u in units if u.is_alive()])} "
-                f"Sel:{sel_txt}{city_info} | Keys: N-next WASD-move B-build Space-end Q-quit | Arrows pan"
+                f"Sel:{sel_txt}{city_info} | Keys: N-next WASD-move B-build Space-end S-save L-load Q-quit | Arrows pan"
             )
             stdscr.addstr(vh, 0, status[:vw])
             stdscr.refresh()
@@ -522,6 +523,77 @@ def run_curses(world: GameMap, p1: Player, p2: Player, units: List[Unit]) -> Non
                         c.production_type = 'Army'
                         c.production_cost = 8
                         # keep progress
+            elif key in (ord('s'), ord('S')):
+                # Save game prompt
+                stdscr.addstr(vh, 0, "Save as filename (without extension): "[:vw])
+                stdscr.refresh()
+                curses.echo()
+                name = stdscr.getstr(vh, min(vw - 1, 35), 50).decode('utf-8').strip()
+                curses.noecho()
+                if name:
+                    path = f"{name}.json"
+                    players_data = [
+                        {"name": p1.name, "is_ai": p1.is_ai, "cities": list(p1.cities)},
+                        {"name": p2.name, "is_ai": p2.is_ai, "cities": list(p2.cities)},
+                    ]
+                    save_full_game(path, world, units, players_data, turn_number, current_player)
+            elif key in (ord('l'), ord('L')):
+                stdscr.addstr(vh, 0, "Load filename (without extension): "[:vw])
+                stdscr.refresh()
+                curses.echo()
+                name = stdscr.getstr(vh, min(vw - 1, 33), 50).decode('utf-8').strip()
+                curses.noecho()
+                if name:
+                    path = f"{name}.json"
+                    data = load_full_game(path)
+                    # Rehydrate map, units, players, turn
+                    loaded_map = data["map"]
+                    world.width = loaded_map["width"]
+                    world.height = loaded_map["height"]
+                    world.tiles = loaded_map["tiles"]
+                    world.fog = loaded_map["fog"]
+                    world.cities = [City(**c) for c in loaded_map["cities"]]
+                    world.explored = loaded_map.get("explored", {})
+                    # Units
+                    units.clear()
+                    for ud in data["units"]:
+                        u = Army(x=ud["x"], y=ud["y"], owner=ud["owner"])  # Only Army for now
+                        u.symbol = ud.get("symbol", "A")
+                        u.max_hp = ud.get("max_hp", 10)
+                        u.hp = ud.get("hp", 10)
+                        u.movement_points = ud.get("movement_points", 1)
+                        u.fuel = ud.get("fuel")
+                        u.moves_left = ud.get("moves_left", 1)
+                        u.home_city = tuple(ud["home_city"]) if ud.get("home_city") else None
+                        units.append(u)
+                    # Players
+                    pdat = data.get("players", [])
+                    if len(pdat) >= 2:
+                        p1.name = pdat[0].get("name", p1.name)
+                        p1.is_ai = pdat[0].get("is_ai", False)
+                        p1.cities = set(tuple(t) for t in pdat[0].get("cities", list(p1.cities)))
+                        p2.name = pdat[1].get("name", p2.name)
+                        p2.is_ai = pdat[1].get("is_ai", False)
+                        p2.cities = set(tuple(t) for t in pdat[1].get("cities", list(p2.cities)))
+                    turn_number = data.get("turn_number", turn_number)
+                    current_player = data.get("current_player", current_player)
+                    # Recompute visibility
+                    world.init_fow([p1.name, p2.name])
+                    if isinstance(world.explored, dict):
+                        # Restore explored; visible will be recomputed
+                        world.visible = {p1.name: [[False for _ in range(world.width)] for _ in range(world.height)], p2.name: [[False for _ in range(world.width)] for _ in range(world.height)]}
+                    recompute_visibility(world, current_player, units)
+                    # Center camera
+                    sel = select_next_unit(units, current_player, None)
+                    if sel is not None:
+                        vx, vy = center_view_on(world, vw, vh, sel.x, sel.y)
+                # Set production at city under selected unit, if owned
+                if selected is not None and selected.owner == current_player:
+                    c = city_at(world, selected.x, selected.y)
+                    if c is not None and c.owner == current_player:
+                        c.production_type = 'Army'
+                        c.production_cost = 8
+                        # keep progress
             elif key in (ord(' '),):
                 # End turn: production, switch player, reset moves, check victory
                 advance_production_and_spawn(world, units)
@@ -587,7 +659,7 @@ def run_fallback(world: GameMap, p1: Player, p2: Player, units: List[Unit]) -> N
     selected = select_next_unit(units, current_player, None)
     if selected is not None:
         vx, vy = center_view_on(world, vw, vh, selected.x, selected.y)
-    print("Text UI. Commands: n=next, wasd=move, b=build, e=end, q=quit; arrows: pan")
+    print("Text UI. Commands: n=next, wasd=move, b=build, e=end, save <name>, load <name>, q=quit; arrows: pan")
     while True:
         view: Viewport = (vx, vy, vw, vh)
         board_lines = render_view(world, view, units, active_player=current_player)
@@ -604,7 +676,8 @@ def run_fallback(world: GameMap, p1: Player, p2: Player, units: List[Unit]) -> N
                 eta = max(0, c.production_cost - c.production_progress)
                 city_info = f" | City: Army ETA {eta}"
         print(f"P:{current_player} T:{turn_number} | Sel:{sel_txt}{city_info} | n/wasd/b/e/q | arrows pan")
-        cmd = input("> ").strip().lower()
+        cmd = input("> ").strip()
+        low = cmd.lower()
         if cmd == 'q':
             ans = input("Quit? (y/N) ").strip().lower()
             if ans == 'y':
@@ -630,7 +703,7 @@ def run_fallback(world: GameMap, p1: Player, p2: Player, units: List[Unit]) -> N
                 if c is not None and c.owner == current_player:
                     c.production_type = 'Army'
                     c.production_cost = 8
-        elif cmd == 'e':
+        elif low == 'e':
             advance_production_and_spawn(world, units)
             opponent = p2.name if current_player == p1.name else p1.name
             opp_city_count = sum(1 for c in world.cities if c.owner == opponent)
@@ -647,7 +720,7 @@ def run_fallback(world: GameMap, p1: Player, p2: Player, units: List[Unit]) -> N
                 vx, vy = center_view_on(world, vw, vh, selected.x, selected.y)
             recompute_visibility(world, current_player, units)
         # Movement commands and skip
-        if cmd in ('i',):
+        if low in ('i',):
             if selected is None:
                 selected = select_next_unit(units, current_player, selected)
             if selected is not None and selected.owner == current_player:
@@ -658,7 +731,7 @@ def run_fallback(world: GameMap, p1: Player, p2: Player, units: List[Unit]) -> N
                 if moved:
                     recompute_visibility(world, current_player, units)
                     selected = select_next_unit(units, current_player, selected)
-        elif cmd in ('k',):
+        elif low in ('k',):
             if selected is None:
                 selected = select_next_unit(units, current_player, selected)
             if selected is not None and selected.owner == current_player:
@@ -669,7 +742,7 @@ def run_fallback(world: GameMap, p1: Player, p2: Player, units: List[Unit]) -> N
                 if moved:
                     recompute_visibility(world, current_player, units)
                     selected = select_next_unit(units, current_player, selected)
-        elif cmd in ('j',):
+        elif low in ('j',):
             if selected is None:
                 selected = select_next_unit(units, current_player, selected)
             if selected is not None and selected.owner == current_player:
@@ -680,7 +753,7 @@ def run_fallback(world: GameMap, p1: Player, p2: Player, units: List[Unit]) -> N
                 if moved:
                     recompute_visibility(world, current_player, units)
                     selected = select_next_unit(units, current_player, selected)
-        elif cmd in ('l',):
+        elif low in ('l',):
             if selected is None:
                 selected = select_next_unit(units, current_player, selected)
             if selected is not None and selected.owner == current_player:
@@ -691,8 +764,61 @@ def run_fallback(world: GameMap, p1: Player, p2: Player, units: List[Unit]) -> N
                 if moved:
                     recompute_visibility(world, current_player, units)
                     selected = select_next_unit(units, current_player, selected)
-        elif cmd in (' ', 'skip', 'wait'):
+        elif low in (' ', 'skip', 'wait'):
             selected = select_next_unit(units, current_player, selected)
+        elif low.startswith('save'):
+            parts = cmd.split()
+            if len(parts) >= 2:
+                name = parts[1].strip()
+                if name:
+                    path = f"{name}.json"
+                    players_data = [
+                        {"name": p1.name, "is_ai": p1.is_ai, "cities": list(p1.cities)},
+                        {"name": p2.name, "is_ai": p2.is_ai, "cities": list(p2.cities)},
+                    ]
+                    save_full_game(path, world, units, players_data, turn_number, current_player)
+        elif low.startswith('load'):
+            parts = cmd.split()
+            if len(parts) >= 2:
+                name = parts[1].strip()
+                if name:
+                    path = f"{name}.json"
+                    data = load_full_game(path)
+                    loaded_map = data["map"]
+                    world.width = loaded_map["width"]
+                    world.height = loaded_map["height"]
+                    world.tiles = loaded_map["tiles"]
+                    world.fog = loaded_map["fog"]
+                    world.cities = [City(**c) for c in loaded_map["cities"]]
+                    world.explored = loaded_map.get("explored", {})
+                    units.clear()
+                    for ud in data["units"]:
+                        u = Army(x=ud["x"], y=ud["y"], owner=ud["owner"])  # Only Army for now
+                        u.symbol = ud.get("symbol", "A")
+                        u.max_hp = ud.get("max_hp", 10)
+                        u.hp = ud.get("hp", 10)
+                        u.movement_points = ud.get("movement_points", 1)
+                        u.fuel = ud.get("fuel")
+                        u.moves_left = ud.get("moves_left", 1)
+                        u.home_city = tuple(ud["home_city"]) if ud.get("home_city") else None
+                        units.append(u)
+                    pdat = data.get("players", [])
+                    if len(pdat) >= 2:
+                        p1.name = pdat[0].get("name", p1.name)
+                        p1.is_ai = pdat[0].get("is_ai", False)
+                        p1.cities = set(tuple(t) for t in pdat[0].get("cities", list(p1.cities)))
+                        p2.name = pdat[1].get("name", p2.name)
+                        p2.is_ai = pdat[1].get("is_ai", False)
+                        p2.cities = set(tuple(t) for t in pdat[1].get("cities", list(p2.cities)))
+                    turn_number = data.get("turn_number", turn_number)
+                    current_player = data.get("current_player", current_player)
+                    world.init_fow([p1.name, p2.name])
+                    if isinstance(world.explored, dict):
+                        world.visible = {p1.name: [[False for _ in range(world.width)] for _ in range(world.height)], p2.name: [[False for _ in range(world.width)] for _ in range(world.height)]}
+                    recompute_visibility(world, current_player, units)
+                    sel = select_next_unit(units, current_player, None)
+                    if sel is not None:
+                        vx, vy = center_view_on(world, vw, vh, sel.x, sel.y)
         print("\n" * 1)
 
 

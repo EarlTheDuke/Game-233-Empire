@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import asdict
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Tuple
 
 from map import City, GameMap
 from units import Unit
@@ -15,6 +15,7 @@ def serialize_map(game_map: GameMap) -> Dict[str, Any]:
         "tiles": game_map.tiles,
         "fog": game_map.fog,
         "cities": [asdict(c) for c in game_map.cities],
+        "explored": game_map.explored,
     }
 
 
@@ -23,23 +24,40 @@ def deserialize_map(data: Dict[str, Any]) -> GameMap:
     m.tiles = data["tiles"]
     m.fog = data["fog"]
     m.cities = [City(**c) for c in data["cities"]]
+    m.explored = data.get("explored", {})
     return m
 
 
 def serialize_units(units: List[Unit]) -> List[Dict[str, Any]]:
-    return [unit.__dict__ for unit in units]
+    payload: List[Dict[str, Any]] = []
+    for unit in units:
+        d = dict(unit.__dict__)
+        # tuples are JSON-serializable; keep as is
+        payload.append(d)
+    return payload
 
 
-def save_game(path: str, game_map: GameMap, units: List[Unit]) -> None:
+def serialize_players(players: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    return players
+
+
+def deserialize_players(players_data: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    return players_data
+
+
+def save_full_game(path: str, game_map: GameMap, units: List[Unit], players: List[Dict[str, Any]], turn_number: int, current_player: str) -> None:
     payload = {
         "map": serialize_map(game_map),
         "units": serialize_units(units),
+        "players": serialize_players(players),
+        "turn_number": turn_number,
+        "current_player": current_player,
     }
     with open(path, "w", encoding="utf-8") as f:
         json.dump(payload, f)
 
 
-def load_game(path: str) -> Dict[str, Any]:
+def load_full_game(path: str) -> Dict[str, Any]:
     with open(path, "r", encoding="utf-8") as f:
         data = json.load(f)
     return data
