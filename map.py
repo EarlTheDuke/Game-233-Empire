@@ -20,6 +20,8 @@ class City:
     production_type: Optional[str] = None  # e.g., 'Army'
     production_progress: int = 0
     production_cost: int = 0
+    # Support cap
+    support_cap: int = 3
 
     def symbol(self) -> str:
         if self.owner is None or self.owner == 'neutral':

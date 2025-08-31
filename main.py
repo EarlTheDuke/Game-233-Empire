@@ -95,6 +95,12 @@ def build_initial_game(width: int = 60, height: int = 24) -> Tuple[GameMap, Play
     ]
     for u in units:
         u.reset_moves()
+    # Assign home city for starter armies so support caps count them
+    for u in units:
+        for c in world.cities:
+            if c.owner == u.owner:
+                u.home_city = (c.x, c.y)
+                break
 
     # Per-player FoW will be initialized in the UI entry point
 
@@ -102,7 +108,7 @@ def build_initial_game(width: int = 60, height: int = 24) -> Tuple[GameMap, Play
     for c in world.cities:
         if c.owner in (p1.name, p2.name):
             c.production_type = "Army"
-            c.production_cost = 6
+            c.production_cost = 8
             c.production_progress = 0
 
     return world, p1, p2, units
@@ -159,7 +165,7 @@ def try_capture_city(world: GameMap, unit: Unit) -> bool:
         c.owner = unit.owner
         # auto-set basic production on capture
         c.production_type = 'Army'
-        c.production_cost = 6
+        c.production_cost = 8
         c.production_progress = 0
         return True
     return False
@@ -233,12 +239,21 @@ def advance_production_and_spawn(world: GameMap, units: List[Unit]) -> None:
                     (c.x + 1, c.y), (c.x - 1, c.y), (c.x, c.y + 1), (c.x, c.y - 1),
                     (c.x + 1, c.y + 1), (c.x - 1, c.y - 1), (c.x + 1, c.y - 1), (c.x - 1, c.y + 1),
                 ]
+                # Enforce support cap: count armies supported by this city
+                def is_supported_by_city(u: Unit, city: City) -> bool:
+                    return isinstance(u, Army) and u.owner == city.owner and u.home_city == (city.x, city.y)
+                supported = sum(1 for u in units if is_supported_by_city(u, c) and u.is_alive())
+                if supported >= c.support_cap:
+                    # Stay ready; try next turn (if an army dies, production can proceed)
+                    c.production_progress = c.production_cost
+                    continue
                 placed = False
                 for (sx, sy) in spawn_positions:
                     if 0 <= sx < world.width and 0 <= sy < world.height:
                         if is_land(world, sx, sy) and unit_at(units, sx, sy) is None:
                             nu = Army(x=sx, y=sy, owner=c.owner)
                             nu.reset_moves()
+                            nu.home_city = (c.x, c.y)
                             units.append(nu)
                             placed = True
                             break
@@ -505,7 +520,7 @@ def run_curses(world: GameMap, p1: Player, p2: Player, units: List[Unit]) -> Non
                     c = city_at(world, selected.x, selected.y)
                     if c is not None and c.owner == current_player:
                         c.production_type = 'Army'
-                        c.production_cost = 6
+                        c.production_cost = 8
                         # keep progress
             elif key in (ord(' '),):
                 # End turn: production, switch player, reset moves, check victory
@@ -614,7 +629,7 @@ def run_fallback(world: GameMap, p1: Player, p2: Player, units: List[Unit]) -> N
                 c = city_at(world, selected.x, selected.y)
                 if c is not None and c.owner == current_player:
                     c.production_type = 'Army'
-                    c.production_cost = 6
+                    c.production_cost = 8
         elif cmd == 'e':
             advance_production_and_spawn(world, units)
             opponent = p2.name if current_player == p1.name else p1.name

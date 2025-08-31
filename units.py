@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Optional
+from typing import Optional, Tuple
 
 
 @dataclass
@@ -15,6 +15,8 @@ class Unit:
     movement_points: int = 1
     fuel: Optional[int] = None  # For aircraft
     moves_left: int = 1  # reset each turn
+    # For support cap logic: which city supports this unit (if any)
+    home_city: Optional[Tuple[int, int]] = None
 
     def is_alive(self) -> bool:
         return self.hp > 0
