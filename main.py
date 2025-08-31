@@ -443,13 +443,13 @@ def run_curses(world: GameMap, p1: Player, p2: Player, units: List[Unit]) -> Non
                     break
                 else:
                     continue
-            elif key in (curses.KEY_LEFT, ord('h')):
+            elif key in (ord('h'),):
                 vx = clamp(vx - 1, 0, max(0, world.width - vw))
-            elif key in (curses.KEY_RIGHT, ord('l')):
+            elif key in (ord('l'),):
                 vx = clamp(vx + 1, 0, max(0, world.width - vw))
-            elif key in (curses.KEY_UP, ord('k')):
+            elif key in (ord('k'),):
                 vy = clamp(vy - 1, 0, max(0, world.height - vh))
-            elif key in (curses.KEY_DOWN, ord('j')):
+            elif key in (ord('j'),):
                 vy = clamp(vy + 1, 0, max(0, world.height - vh))
             elif key in (ord('n'), ord('N')):
                 selected = select_next_unit(units, current_player, selected)
