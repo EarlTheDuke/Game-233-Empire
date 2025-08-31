@@ -303,6 +303,12 @@ def build_sidebar_lines(ui: str) -> List[str]:
     return commands + terrain + units_help
 
 
+def center_view_on(world: GameMap, vw: int, vh: int, target_x: int, target_y: int) -> Tuple[int, int]:
+    vx = clamp(target_x - vw // 2, 0, max(0, world.width - vw))
+    vy = clamp(target_y - vh // 2, 0, max(0, world.height - vh))
+    return vx, vy
+
+
 def run_curses(world: GameMap, p1: Player, p2: Player, units: List[Unit]) -> None:
     assert HAS_CURSES and curses is not None
 
@@ -327,6 +333,10 @@ def run_curses(world: GameMap, p1: Player, p2: Player, units: List[Unit]) -> Non
         vh = max(10, min(world.height, max_y - 1))
         vx, vy = 0, 0
         reset_moves_for_owner(units, current_player)
+        # Center on first ready unit for current player
+        selected = select_next_unit(units, current_player, None)
+        if selected is not None:
+            vx, vy = center_view_on(world, vw, vh, selected.x, selected.y)
 
         while True:
             view: Viewport = (vx, vy, vw, vh)
@@ -475,7 +485,9 @@ def run_curses(world: GameMap, p1: Player, p2: Player, units: List[Unit]) -> Non
                 current_player = opponent
                 turn_number += 1
                 reset_moves_for_owner(units, current_player)
-                selected = None
+                selected = select_next_unit(units, current_player, None)
+                if selected is not None:
+                    vx, vy = center_view_on(world, vw, vh, selected.x, selected.y)
 
     curses.wrapper(_main)
 
@@ -492,6 +504,10 @@ def run_fallback(world: GameMap, p1: Player, p2: Player, units: List[Unit]) -> N
     turn_number = 1
     selected: Optional[Unit] = None
     reset_moves_for_owner(units, current_player)
+    # Center on first ready unit on start
+    selected = select_next_unit(units, current_player, None)
+    if selected is not None:
+        vx, vy = center_view_on(world, vw, vh, selected.x, selected.y)
     print("Text UI. Commands: n=next, wasd=move, b=build, e=end, q=quit; arrows: pan")
     while True:
         view: Viewport = (vx, vy, vw, vh)
@@ -547,7 +563,9 @@ def run_fallback(world: GameMap, p1: Player, p2: Player, units: List[Unit]) -> N
             current_player = opponent
             turn_number += 1
             reset_moves_for_owner(units, current_player)
-            selected = None
+            selected = select_next_unit(units, current_player, None)
+            if selected is not None:
+                vx, vy = center_view_on(world, vw, vh, selected.x, selected.y)
         # Movement commands and skip
         if cmd in ('i',):
             if selected is None:
