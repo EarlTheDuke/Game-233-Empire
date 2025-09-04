@@ -32,6 +32,11 @@ def serialize_units(units: List[Unit]) -> List[Dict[str, Any]]:
     payload: List[Dict[str, Any]] = []
     for unit in units:
         d = dict(unit.__dict__)
+        # include explicit unit type for robust deserialization
+        d["unit_type"] = type(unit).__name__
+        # Ensure tuples become lists for JSON compatibility where needed
+        if isinstance(d.get("home_city"), tuple):
+            d["home_city"] = list(d["home_city"])  # type: ignore[index]
         # tuples are JSON-serializable; keep as is
         payload.append(d)
     return payload

@@ -7,8 +7,8 @@ from typing import Dict, List, Optional, Tuple
 
 
 class Terrain:
-    OCEAN = '~'
-    LAND = '.'  # Keep simple; can evolve to '+' or '*' variants later
+    OCEAN = '.'
+    LAND = '+'  # Land now shown as '+'; water as '.'
 
 
 @dataclass
@@ -21,7 +21,7 @@ class City:
     production_progress: int = 0
     production_cost: int = 0
     # Support cap
-    support_cap: int = 3
+    support_cap: int = 2
 
     def symbol(self) -> str:
         if self.owner is None or self.owner == 'neutral':

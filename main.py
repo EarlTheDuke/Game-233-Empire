@@ -39,7 +39,7 @@ except Exception:
     HAS_CURSES = False
 
 from map import GameMap, City
-from units import Army, Unit
+from units import Army, Unit, Fighter, Carrier, NuclearMissile
 from player import Player
 from combat import resolve_attack
 from savegame import save_full_game, load_full_game
@@ -50,6 +50,86 @@ Viewport = Tuple[int, int, int, int]  # x, y, width, height
 # Visibility radii (can be tuned)
 UNIT_SIGHT = 3
 CITY_SIGHT = 5
+
+
+# --- Session statistics (kills/losses by type) ---
+GAME_STATS: Dict[str, Dict[str, Dict[str, int]]] = {}
+# Simple ring buffer for recent battle reports (latest last)
+BATTLE_REPORTS: List[str] = []
+MAX_REPORTS: int = 12
+
+
+def init_game_stats(players: List[str]) -> None:
+    global GAME_STATS
+    types = ["Army", "Fighter", "Carrier", "NuclearMissile"]
+    GAME_STATS = {p: {"kills": {t: 0 for t in types}, "losses": {t: 0 for t in types}} for p in players}
+
+
+def record_kill(killer_owner: str, victim: Unit) -> None:
+    vtype = type(victim).__name__
+    if killer_owner in GAME_STATS and vtype in GAME_STATS[killer_owner]["kills"]:
+        GAME_STATS[killer_owner]["kills"][vtype] += 1
+
+
+def record_loss(owner: str, unit: Unit) -> None:
+    utype = type(unit).__name__
+    if owner in GAME_STATS and utype in GAME_STATS[owner]["losses"]:
+        GAME_STATS[owner]["losses"][utype] += 1
+
+
+def add_battle_report(line: str) -> None:
+    BATTLE_REPORTS.append(line)
+    if len(BATTLE_REPORTS) > MAX_REPORTS:
+        del BATTLE_REPORTS[0:len(BATTLE_REPORTS) - MAX_REPORTS]
+
+def build_stats_lines(active_player: str, units: List[Unit], vw: int, world: GameMap, sidebar_w: int, max_cols: Optional[int] = None) -> List[str]:
+    # Only show when full-screen map is visible; caller controls visibility
+    # Compute forces for active player
+    forces: Dict[str, int] = {"Army": 0, "Fighter": 0, "Carrier": 0, "NuclearMissile": 0}
+    for u in units:
+        if u.is_alive() and u.owner == active_player:
+            nm = type(u).__name__
+            if nm in forces:
+                forces[nm] += 1
+    stats = GAME_STATS.get(active_player, {"kills": {}, "losses": {}})
+    kills = stats.get("kills", {})
+    losses = stats.get("losses", {})
+    def fmt_row(label: str, data: Dict[str, int]) -> str:
+        return (
+            f" {label}: A {data.get('Army', 0)}"
+            f" F {data.get('Fighter', 0)}"
+            f" C {data.get('Carrier', 0)}"
+            f" M {data.get('NuclearMissile', 0)}"
+        )
+    base_lines: List[str] = [
+        "",
+        "Stats:",
+        fmt_row("Kills", kills),
+        fmt_row("Losses", losses),
+        fmt_row("Forces", forces),
+    ]
+    # Append battle reports under stats
+    if BATTLE_REPORTS:
+        base_lines.append("")
+        base_lines.append("Reports:")
+        # show most recent first
+        for entry in reversed(BATTLE_REPORTS[-8:]):
+            base_lines.append(f" {entry}")
+    if max_cols is None or max_cols <= 0:
+        return base_lines
+    # Wrap lines to available width
+    wrapped: List[str] = []
+    for line in base_lines:
+        s = line
+        if len(s) <= max_cols:
+            wrapped.append(s)
+            continue
+        # naive hard wrap
+        start = 0
+        while start < len(s):
+            wrapped.append(s[start:start + max_cols])
+            start += max_cols
+    return wrapped
 
 
 def clamp(value: int, low: int, high: int) -> int:
@@ -68,8 +148,9 @@ def overlay_units_on_buffer(buffer_lines: List[str], view: Viewport, units: List
         if vx <= u.x < vx + vw and vy <= u.y < vy + vh:
             ux, uy = u.x - vx, u.y - vy
             if 0 <= uy < len(canvas) and 0 <= ux < len(canvas[uy]):
-                # Distinguish owners minimally: P1 'A', P2 'a'
-                canvas[uy][ux] = 'A' if u.owner == 'P1' else 'a'
+                # Show unit symbol, case indicates owner (P1 uppercase, P2 lowercase)
+                ch = u.symbol if u.owner == 'P1' else u.symbol.lower()
+                canvas[uy][ux] = ch
     return ["".join(row) for row in canvas]
 
 
@@ -110,9 +191,11 @@ def build_initial_game(width: int = 60, height: int = 24) -> Tuple[GameMap, Play
     for c in world.cities:
         if c.owner in (p1.name, p2.name):
             c.production_type = "Army"
-            c.production_cost = 8
+            c.production_cost = 12
             c.production_progress = 0
 
+    # Initialize session stats for both players
+    init_game_stats([p1.name, p2.name])
     return world, p1, p2, units
 
 
@@ -156,12 +239,46 @@ def city_at(world: GameMap, x: int, y: int) -> Optional[City]:
 def is_land(world: GameMap, x: int, y: int) -> bool:
     if not (0 <= x < world.width and 0 <= y < world.height):
         return False
-    return world.tiles[y][x] == '.'
+    return world.tiles[y][x] == '+'
+
+
+def can_found_city(world: GameMap, units: List[Unit], u: Unit) -> bool:
+    if not isinstance(u, Army):
+        return False
+    if not u.is_alive():
+        return False
+    # Must be on land, no existing city here, and tile not occupied by enemy unit
+    if not is_land(world, u.x, u.y):
+        return False
+    if city_at(world, u.x, u.y) is not None:
+        return False
+    # No enemy unit stacked here (shouldn't happen) but be safe
+    for other in units:
+        if other is not u and other.is_alive() and other.x == u.x and other.y == u.y and other.owner != u.owner:
+            return False
+    return True
+
+
+def found_city_from_army(world: GameMap, units: List[Unit], u: Unit) -> bool:
+    """Turn the given Army into a city owned by its player. The army is removed."""
+    if not can_found_city(world, units, u):
+        return False
+    # Create city with default production set to Army
+    new_city = City(x=u.x, y=u.y, owner=u.owner, production_type='Army', production_progress=0, production_cost=8)
+    world.cities.append(new_city)
+    # Mark on player's city set if tracked
+    # Player sets are updated elsewhere in flow; for now we keep map as source of truth
+    # Remove (kill) the unit
+    u.hp = 0
+    return True
 
 
 def try_capture_city(world: GameMap, unit: Unit) -> bool:
     c = city_at(world, unit.x, unit.y)
     if c is None:
+        return False
+    # Air units cannot capture cities
+    if isinstance(unit, Fighter):
         return False
     if c.owner != unit.owner:
         c.owner = unit.owner
@@ -183,24 +300,106 @@ def try_move_unit(world: GameMap, units: List[Unit], u: Unit, dx: int, dy: int) 
     # Prevent moving off-map: if target is out of bounds, ignore
     if not (0 <= nx < world.width and 0 <= ny < world.height):
         return False, False, False, ""
-    if not is_land(world, nx, ny):
+    # Terrain constraint: ground units must stay on land; fighters and missiles can fly over any tile
+    if not isinstance(u, Fighter) and not isinstance(u, Carrier) and not isinstance(u, NuclearMissile) and not is_land(world, nx, ny):
         return False, False, False, ""
+    # Carriers must stay on ocean
+    if isinstance(u, Carrier):
+        if 0 <= nx < world.width and 0 <= ny < world.height and world.tiles[ny][nx] != '.':
+            return False, False, False, ""
+    # Special handling for NuclearMissile straight-line constraint and skipping over blockers
+    if isinstance(u, NuclearMissile):
+        # Set direction on first move
+        if u.direction_dx is None and u.direction_dy is None:
+            if dx == 0 and dy == 0:
+                return False, False, False, ""
+            u.direction_dx, u.direction_dy = dx, dy
+        else:
+            if dx != u.direction_dx or dy != u.direction_dy:
+                return False, False, False, "Missile locked to direction"
+        # Terrain: missiles can fly over any terrain
+        # If tile occupied, try to hop one extra tile in same direction (costs 2 moves, counts 2 range)
+        blocking_next = unit_at(units, nx, ny)
+        if blocking_next is not None:
+            if u.moves_left < 2:
+                return False, False, False, "Missile hop needs 2 moves"
+            nx2, ny2 = nx + dx, ny + dy
+            if not (0 <= nx2 < world.width and 0 <= ny2 < world.height):
+                return False, False, False, "Missile hop out of bounds"
+            if unit_at(units, nx2, ny2) is not None:
+                return False, False, False, "Missile hop landing occupied"
+            # Perform hop
+            u.x, u.y = nx2, ny2
+            u.moves_left -= 2
+            u.traveled += 2
+        else:
+            # Normal step
+            u.x, u.y = nx, ny
+            u.moves_left -= 1
+            u.traveled += 1
+        # Auto-detonate at max distance
+        if u.traveled >= 40 or u.moves_left <= 0:
+            det_u, det_c = detonate_missile(world, units, u.owner, u.x, u.y, radius=10)
+            u.hp = 0
+            return True, False, False, f"Missile detonated: units {det_u}, cities {det_c}"
+        return True, False, False, ""
+
     blocking = unit_at(units, nx, ny)
     if blocking is not None:
         if blocking.owner == u.owner:
-            return False, False, False, ""  # cannot stack
-        # combat
-        # Apply city defense bonus: defender in city gets +0.10, attacker -0.10
-        a_hit = 0.55
-        d_hit = 0.50
+            # Skip-over rule: Fighters may hop over a friendly unit if they have 2+ moves
+            if isinstance(u, Fighter):
+                if u.moves_left >= 2:
+                    nx2, ny2 = nx + dx, ny + dy
+                    if 0 <= nx2 < world.width and 0 <= ny2 < world.height:
+                        if unit_at(units, nx2, ny2) is None:
+                            # Fighters can land on any terrain; perform hop
+                            u.x, u.y = nx2, ny2
+                            u.moves_left -= 2
+                            # Fighters cannot capture; call anyway for consistency (will no-op)
+                            _ = try_capture_city(world, u)
+                            return True, False, False, "Hopped over friendly"
+                        else:
+                            return False, False, False, "Hop blocked: landing occupied"
+                    else:
+                        return False, False, False, "Hop blocked: out of bounds"
+                else:
+                    return False, False, False, "Need 2 moves to hop over friendly"
+            return False, False, False, ""  # cannot stack for others
+        # combat (Carriers have no special attack; use default odds)
+        # Missiles fly over any units; they do not engage in combat
+        if isinstance(u, NuclearMissile):
+            # Allow passing over by treating as if no blocker (handled in missile branch above normally)
+            pass
+        # Base odds; special-case Fighter vs Army per balance tweaks
+        if isinstance(u, Fighter) and isinstance(blocking, Army):
+            a_hit = 0.53
+            d_hit = 0.47
+        elif isinstance(u, Fighter):
+            a_hit = 0.60
+            d_hit = 0.40
+        else:
+            a_hit = 0.53
+            d_hit = 0.52
+        # City defense bonus increased to ±0.15
         cdef = city_at(world, nx, ny)
         if cdef is not None and cdef.owner == blocking.owner:
-            a_hit -= 0.10
-            d_hit += 0.10
+            a_hit -= 0.15
+            d_hit += 0.15
         attacker_alive, defender_alive = resolve_attack(u, blocking, attacker_hit=a_hit, defender_hit=d_hit)
+        # Add concise battle report
+        loc = f"@({nx},{ny})"
+        atk = f"{u.owner} {type(u).__name__}"
+        dfd = f"{blocking.owner} {type(blocking).__name__}"
+        city_tag = " city" if (cdef is not None and cdef.owner == blocking.owner) else ""
+        outcome = "kill" if not defender_alive else ("trade" if not attacker_alive else "clash")
+        add_battle_report(f"{atk} vs {dfd}{city_tag} {loc} a:{a_hit:.2f} d:{d_hit:.2f} -> {outcome}")
         if not defender_alive:
             # remove defender; move in if attacker alive
             blocking.hp = 0
+            # record kill/loss
+            record_kill(u.owner, blocking)
+            record_loss(blocking.owner, blocking)
             if attacker_alive:
                 u.x, u.y = nx, ny
                 u.moves_left -= 1
@@ -215,8 +414,10 @@ def try_move_unit(world: GameMap, units: List[Unit], u: Unit, dx: int, dy: int) 
             # defender survived; attacker may have died
             if not attacker_alive:
                 u.hp = 0
+                record_loss(u.owner, u)
+                record_kill(blocking.owner, u)
         return True, False, False, "Attacker destroyed"
-    # Move into empty land
+    # Move into empty tile
     u.x, u.y = nx, ny
     u.moves_left -= 1
     captured = try_capture_city(world, u)
@@ -228,42 +429,176 @@ def try_move_unit(world: GameMap, units: List[Unit], u: Unit, dx: int, dy: int) 
     return True, False, False, ""
 
 
+# --- Production system (extensible) ---
+from typing import Any, Callable
+
+
+def is_tile_free(world: GameMap, units: List[Unit], x: int, y: int) -> bool:
+    return unit_at(units, x, y) is None
+
+
+def spawn_army(world: GameMap, units: List[Unit], city: City) -> bool:
+    spawn_positions: List[Tuple[int, int]] = [
+        (city.x, city.y),
+        (city.x + 1, city.y), (city.x - 1, city.y), (city.x, city.y + 1), (city.x, city.y - 1),
+        (city.x + 1, city.y + 1), (city.x - 1, city.y - 1), (city.x + 1, city.y - 1), (city.x - 1, city.y + 1),
+    ]
+    # Enforce support cap for Armies only
+    def is_supported_by_city(u: Unit, c: City) -> bool:
+        return isinstance(u, Army) and u.owner == c.owner and u.home_city == (c.x, c.y)
+    supported = sum(1 for u in units if is_supported_by_city(u, city) and u.is_alive())
+    if supported >= city.support_cap:
+        return False
+    for (sx, sy) in spawn_positions:
+        if 0 <= sx < world.width and 0 <= sy < world.height:
+            if is_land(world, sx, sy) and is_tile_free(world, units, sx, sy):
+                nu = Army(x=sx, y=sy, owner=city.owner or "")
+                nu.reset_moves()
+                nu.home_city = (city.x, city.y)
+                units.append(nu)
+                return True
+    return False
+
+
+def spawn_fighter(world: GameMap, units: List[Unit], city: City) -> bool:
+    # Fighters spawn only on the city tile if free
+    sx, sy = city.x, city.y
+    if 0 <= sx < world.width and 0 <= sy < world.height:
+        if is_tile_free(world, units, sx, sy):
+            nu = Fighter(x=sx, y=sy, owner=city.owner or "")
+            nu.reset_moves()
+            nu.home_city = (city.x, city.y)
+            units.append(nu)
+            return True
+    return False
+
+
+def spawn_missile(world: GameMap, units: List[Unit], city: City) -> bool:
+    # Spawn only on city tile if free
+    sx, sy = city.x, city.y
+    if 0 <= sx < world.width and 0 <= sy < world.height:
+        if is_tile_free(world, units, sx, sy):
+            nu = NuclearMissile(x=sx, y=sy, owner=city.owner or "")
+            nu.reset_moves()
+            nu.home_city = (city.x, city.y)
+            units.append(nu)
+            return True
+    return False
+
+def spawn_carrier(world: GameMap, units: List[Unit], city: City) -> bool:
+    # Place on any adjacent ocean tile (not diagonal preferred first)
+    candidates: List[Tuple[int, int]] = [
+        (city.x + 1, city.y), (city.x - 1, city.y), (city.x, city.y + 1), (city.x, city.y - 1),
+        (city.x + 1, city.y + 1), (city.x - 1, city.y - 1), (city.x + 1, city.y - 1), (city.x - 1, city.y + 1),
+    ]
+    for sx, sy in candidates:
+        if 0 <= sx < world.width and 0 <= sy < world.height:
+            if world.tiles[sy][sx] == '.' and is_tile_free(world, units, sx, sy):
+                nu = Carrier(x=sx, y=sy, owner=city.owner or "")
+                nu.reset_moves()
+                nu.home_city = (city.x, city.y)
+                units.append(nu)
+                return True
+    return False
+
+
+def detonate_missile(world: GameMap, units: List[Unit], owner: str, x: int, y: int, radius: int = 20) -> Tuple[int, int]:
+    r2 = radius * radius
+    # Destroy units in radius and neutralize cities
+    units_killed = 0
+    for v in units:
+        if not v.is_alive():
+            continue
+        dx = v.x - x
+        dy = v.y - y
+        if dx * dx + dy * dy <= r2:
+            if v.owner == owner:
+                record_loss(owner, v)
+            else:
+                record_kill(owner, v)
+                record_loss(v.owner, v)
+            v.hp = 0
+            units_killed += 1
+    cities_neutralized = 0
+    for c in world.cities:
+        dx = c.x - x
+        dy = c.y - y
+        if dx * dx + dy * dy <= r2:
+            if c.owner is not None:
+                c.owner = None
+                cities_neutralized += 1
+            # Keep production settings; ownership neutralized only
+    return units_killed, cities_neutralized
+
+PRODUCTION_CATALOG: Dict[str, Dict[str, Any]] = {
+    "Army": {"cost": 12, "spawn": spawn_army, "label": "Army"},
+    "Fighter": {"cost": 20, "spawn": spawn_fighter, "label": "Fighter"},
+    "Carrier": {"cost": 32, "spawn": spawn_carrier, "label": "Carrier"},
+    "NuclearMissile": {"cost": 75, "spawn": spawn_missile, "label": "Nuke"},
+}
+
+
+def set_city_production(city: City, prod_type: str) -> bool:
+    if prod_type not in PRODUCTION_CATALOG:
+        return False
+    city.production_type = prod_type
+    city.production_cost = int(PRODUCTION_CATALOG[prod_type].get("cost", 0))
+    return True
+
+
+def cycle_city_production(city: City) -> None:
+    options = list(PRODUCTION_CATALOG.keys())
+    if not options:
+        return
+    try:
+        idx = options.index(city.production_type)  # type: ignore[arg-type]
+    except Exception:
+        idx = -1
+    next_type = options[(idx + 1) % len(options)]
+    set_city_production(city, next_type)
+
+
+def enforce_fighter_basing(world: GameMap, units: List[Unit], owner: str) -> None:
+    # Fighters must end turn on a friendly city tile or are destroyed
+    for u in units:
+        if not u.is_alive():
+            continue
+        if isinstance(u, Fighter) and u.owner == owner:
+            c = city_at(world, u.x, u.y)
+            if c is not None and c.owner == owner:
+                continue
+            # Allow adjacency to friendly Carrier (orthogonal)
+            adjacent_ok = False
+            for dx, dy in ((1,0),(-1,0),(0,1),(0,-1),(1,1),(-1,-1),(1,-1),(-1,1)):
+                ax, ay = u.x + dx, u.y + dy
+                v = unit_at(units, ax, ay)
+                if v is not None and v.is_alive() and isinstance(v, Carrier) and v.owner == owner:
+                    adjacent_ok = True
+                    break
+            if not adjacent_ok:
+                u.hp = 0
+
+
 def advance_production_and_spawn(world: GameMap, units: List[Unit]) -> None:
     for c in world.cities:
         if c.owner is None or c.owner == 'neutral':
             continue
-        if c.production_type == 'Army' and c.production_cost > 0:
-            c.production_progress += 1
-            if c.production_progress >= c.production_cost:
-                # Try to spawn at city tile or adjacent land tile
-                spawn_positions: List[Tuple[int, int]] = [
-                    (c.x, c.y),
-                    (c.x + 1, c.y), (c.x - 1, c.y), (c.x, c.y + 1), (c.x, c.y - 1),
-                    (c.x + 1, c.y + 1), (c.x - 1, c.y - 1), (c.x + 1, c.y - 1), (c.x - 1, c.y + 1),
-                ]
-                # Enforce support cap: count armies supported by this city
-                def is_supported_by_city(u: Unit, city: City) -> bool:
-                    return isinstance(u, Army) and u.owner == city.owner and u.home_city == (city.x, city.y)
-                supported = sum(1 for u in units if is_supported_by_city(u, c) and u.is_alive())
-                if supported >= c.support_cap:
-                    # Stay ready; try next turn (if an army dies, production can proceed)
-                    c.production_progress = c.production_cost
-                    continue
-                placed = False
-                for (sx, sy) in spawn_positions:
-                    if 0 <= sx < world.width and 0 <= sy < world.height:
-                        if is_land(world, sx, sy) and unit_at(units, sx, sy) is None:
-                            nu = Army(x=sx, y=sy, owner=c.owner)
-                            nu.reset_moves()
-                            nu.home_city = (c.x, c.y)
-                            units.append(nu)
-                            placed = True
-                            break
-                if placed:
-                    c.production_progress = 0
-                else:
-                    # try again next turn
-                    c.production_progress = c.production_cost  # stay ready
+        if not c.production_type or c.production_cost <= 0:
+            continue
+        c.production_progress += 1
+        target = c.production_type
+        entry = PRODUCTION_CATALOG.get(target)
+        if entry is None:
+            continue
+        if c.production_progress >= entry.get("cost", c.production_cost):
+            placed = False
+            spawn_fn = entry.get("spawn")
+            if callable(spawn_fn):
+                placed = bool(spawn_fn(world, units, c))  # type: ignore[misc]
+            if placed:
+                c.production_progress = 0
+            else:
+                c.production_progress = c.production_cost
 
     # Healing: +1 hp/turn in owned cities (cap at max_hp)
     for u in units:
@@ -299,6 +634,16 @@ def select_next_unit(units: List[Unit], owner: str, current: Optional[Unit]) -> 
     return own_units[(idx + 1) % len(own_units)]
 
 
+def select_next_unit_any(units: List[Unit], owner: str, current: Optional[Unit]) -> Optional[Unit]:
+    own_units = [u for u in units if u.owner == owner and u.is_alive()]
+    if not own_units:
+        return None
+    if current is None or current not in own_units:
+        return own_units[0]
+    idx = own_units.index(current)
+    return own_units[(idx + 1) % len(own_units)]
+
+
 def recompute_visibility(world: GameMap, owner: str, units: List[Unit]) -> None:
     # Clear and mark for the owner based on cities and units
     world.clear_visible_for(owner)
@@ -307,7 +652,9 @@ def recompute_visibility(world: GameMap, owner: str, units: List[Unit]) -> None:
             world.mark_visible_circle(owner, c.x, c.y, radius=CITY_SIGHT)
     for u in units:
         if u.owner == owner and u.is_alive():
-            world.mark_visible_circle(owner, u.x, u.y, radius=UNIT_SIGHT)
+            # Fighters provide extended sight
+            radius = 5 if isinstance(u, Fighter) else UNIT_SIGHT
+            world.mark_visible_circle(owner, u.x, u.y, radius=radius)
 
 
 def build_sidebar_lines(ui: str) -> List[str]:
@@ -316,19 +663,27 @@ def build_sidebar_lines(ui: str) -> List[str]:
         commands = [
             "Commands:",
             " N  Next unit",
-            " Arrows Move unit",
-            " B  Build Army",
+            " Arrows/Numpad 8/2/4/6 Move (Numpad diagonals)",
+            " B  Set Army",
+            " R  Set Fighter",
+            " P  Cycle Production",
+            " F  Found City",
+            " C  Cycle Cities",
             " S  Save, O Load",
             " Space End turn",
             " Q  Quit",
-            " Pan: H/J/K/L",
+            " D  Detonate Nuclear Missile",
         ]
     else:
         commands = [
             "Commands:",
             " n  Next unit",
             " i/j/k/l Move",
-            " b  Build Army",
+            " b  Set Army",
+            " r  Set Fighter",
+            " p  Cycle Production",
+            " f  Found City",
+            " c  Cycle Cities",
             " e  End turn",
             " q  Quit",
             " Pan: w/a/s/d",
@@ -336,8 +691,8 @@ def build_sidebar_lines(ui: str) -> List[str]:
     terrain = [
         "",
         "Terrain:",
-        " .  Land",
-        " ~  Ocean",
+        " +  Land",
+        " .  Ocean",
         " O  City (P1)",
         " X  City (P2)",
         " o  City (Neutral)",
@@ -347,6 +702,12 @@ def build_sidebar_lines(ui: str) -> List[str]:
         "Units:",
         " A  Army (P1)",
         " a  Army (P2)",
+        " F  Fighter (P1)",
+        " f  Fighter (P2)",
+        " C  Carrier (P1)",
+        " c  Carrier (P2)",
+        " M  Nuclear Missile (P1)",
+        " m  Nuclear Missile (P2)",
     ]
     return commands + terrain + units_help
 
@@ -379,6 +740,7 @@ def run_curses(world: GameMap, p1: Player, p2: Player, units: List[Unit]) -> Non
         current_player = p1.name
         turn_number = 1
         selected: Optional[Unit] = None
+        focused_city_index: Optional[int] = None
         # reserve sidebar width
         sidebar_lines = build_sidebar_lines('curses')
         sidebar_w = max(len(line) for line in sidebar_lines) + 1
@@ -402,8 +764,25 @@ def run_curses(world: GameMap, p1: Player, p2: Player, units: List[Unit]) -> Non
             vx, vy = center_view_on(world, vw, vh, selected.x, selected.y)
 
         while True:
+            # Dynamically adapt viewport size to current terminal window
+            try:
+                max_y, max_x = stdscr.getmaxyx()
+            except Exception:
+                max_y, max_x = vh + 1, vw
+            new_vw = max(20, min(world.width, max_x - sidebar_w))
+            new_vh = max(10, min(world.height, max_y - 1))
+            if new_vw != vw or new_vh != vh:
+                vw, vh = new_vw, new_vh
+                vx = clamp(vx, 0, max(0, world.width - vw))
+                vy = clamp(vy, 0, max(0, world.height - vh))
             view: Viewport = (vx, vy, vw, vh)
             lines = render_view(world, view, units, active_player=current_player)
+            # Precompute stats panel lines if full map fits
+            show_full_map = (vw >= world.width and vh >= world.height)
+            stats_lines: List[str] = []
+            if show_full_map:
+                avail = max(0, max_x - (vw + 1 + sidebar_w) - 1)
+                stats_lines = build_stats_lines(current_player, units, vw, world, sidebar_w, max_cols=avail)
             stdscr.erase()
             for row_idx, line in enumerate(lines[:vh]):
                 # Draw map line
@@ -416,9 +795,25 @@ def run_curses(world: GameMap, p1: Player, p2: Player, units: List[Unit]) -> Non
                             stdscr.chgat(row_idx, sx, 1, curses.A_REVERSE)
                         except Exception:
                             pass
+                # Highlight focused city tile (standout)
+                if focused_city_index is not None:
+                    own_cities = [c for c in world.cities if c.owner == current_player]
+                    if own_cities:
+                        fc = own_cities[focused_city_index % len(own_cities)]
+                        cx, cy = fc.x - vx, fc.y - vy
+                        if cy == row_idx and 0 <= cx < vw:
+                            try:
+                                stdscr.chgat(row_idx, cx, 1, curses.A_BOLD)
+                            except Exception:
+                                pass
                 # right-side sidebar content
                 if row_idx < len(sidebar_lines):
                     stdscr.addstr(row_idx, vw + 1, sidebar_lines[row_idx][:sidebar_w - 1])
+                # Draw stats panel to the right of sidebar when full map visible
+                if show_full_map and row_idx < len(stats_lines):
+                    offset = vw + 1 + sidebar_w
+                    if offset < max_x:
+                        stdscr.addstr(row_idx, offset, stats_lines[row_idx][:max(0, max_x - offset - 1)])
 
             city_under_view: Optional[City] = None
             # Status: player, turn, selected unit, hint keys
@@ -429,17 +824,38 @@ def run_curses(world: GameMap, p1: Player, p2: Player, units: List[Unit]) -> Non
             city_info = ""
             if selected is not None and selected.is_alive():
                 c = city_at(world, selected.x, selected.y)
-                if c is not None and c.owner == current_player and c.production_type == 'Army' and c.production_cost > 0:
+                if c is not None and c.owner == current_player and c.production_type and c.production_cost > 0:
                     eta = max(0, c.production_cost - c.production_progress)
-                    city_info = f" | City: Army ETA {eta}"
+                    city_info = f" | City: {c.production_type} ETA {eta}"
+            # Focused city info
+            focus_info = ""
+            if focused_city_index is not None:
+                own_cities = [c for c in world.cities if c.owner == current_player]
+                if own_cities:
+                    fc = own_cities[focused_city_index % len(own_cities)]
+                    eta2 = max(0, (fc.production_cost or 0) - (fc.production_progress or 0)) if fc.production_cost else 0
+                    ptxt = fc.production_type or "(none)"
+                    focus_info = f" | Focus: ({fc.x},{fc.y}) {ptxt} ETA {eta2}"
             status = (
-                f"P:{current_player} T:{turn_number} | Units:{len([u for u in units if u.is_alive()])} "
-                f"Sel:{sel_txt}{city_info}"
+                f"P:{current_player} T:{turn_number} "
+                f"| Sel:{sel_txt}{city_info}{focus_info}"
             )
             stdscr.addstr(vh, 0, status[:vw])
             stdscr.refresh()
 
             key = stdscr.getch()
+            # Pre-handle missile detonation on D/d to avoid conflicts with pan key 'D'
+            if key in (ord('d'), ord('D')):
+                if selected is not None and isinstance(selected, NuclearMissile) and selected.owner == current_player:
+                    det_u, det_c = detonate_missile(world, units, current_player, selected.x, selected.y, radius=10)
+                    selected.hp = 0
+                    selected = None
+                    recompute_visibility(world, current_player, units)
+                    msg = f"Nuke: destroyed {det_u} units, neutralized {det_c} cities"
+                    stdscr.addstr(vh, 0, msg[:vw])
+                    stdscr.refresh()
+                    selected = select_next_unit(units, current_player, selected)
+                    continue
             if key in (ord('q'), ord('Q')):
                 # confirm quit if game in progress
                 stdscr.addstr(vh, 0, "Quit? (y/N)"[:vw])
@@ -449,17 +865,18 @@ def run_curses(world: GameMap, p1: Player, p2: Player, units: List[Unit]) -> Non
                     break
                 else:
                     continue
-            elif key in (ord('h'),):
+            elif key in (ord('a'), ord('A')):
                 vx = clamp(vx - 1, 0, max(0, world.width - vw))
-            elif key in (ord('l'),):
+            elif key in (ord('d'), ord('D')):
                 vx = clamp(vx + 1, 0, max(0, world.width - vw))
-            elif key in (ord('k'),):
+            elif key in (ord('w'), ord('W')):
                 vy = clamp(vy - 1, 0, max(0, world.height - vh))
-            elif key in (ord('j'),):
+            elif key in (ord('s'), ord('S')):
                 vy = clamp(vy + 1, 0, max(0, world.height - vh))
             elif key in (ord('n'), ord('N')):
-                selected = select_next_unit(units, current_player, selected)
-            elif key == curses.KEY_UP:
+                # Cycle through all own units (even if out of moves) so Armies can found cities after moving
+                selected = select_next_unit_any(units, current_player, selected)
+            elif key == curses.KEY_UP or key == getattr(curses, 'KEY_UP', -999) or key == getattr(curses, 'KEY_A2', -999) or key == getattr(curses, 'KEY_SR', -999) or key == getattr(curses, 'KEY_BTAB', -999) or key == getattr(curses, 'KEY_SUP', -999) or key == getattr(curses, 'KEY_NUMPAD8', -999):
                 if selected is None:
                     selected = select_next_unit(units, current_player, selected)
                 if selected is not None and selected.owner == current_player:
@@ -474,9 +891,10 @@ def run_curses(world: GameMap, p1: Player, p2: Player, units: List[Unit]) -> Non
                     if moved:
                         # update FoW after move
                         recompute_visibility(world, current_player, units)
-                        # auto-select next ready unit
-                        selected = select_next_unit(units, current_player, selected)
-            elif key == curses.KEY_DOWN:
+                        # keep selection if unit still has moves
+                        if not (selected is not None and selected.is_alive() and selected.can_move()):
+                            selected = select_next_unit(units, current_player, selected)
+            elif key == curses.KEY_DOWN or key == getattr(curses, 'KEY_DOWN', -999) or key == getattr(curses, 'KEY_C2', -999) or key == getattr(curses, 'KEY_SF', -999) or key == getattr(curses, 'KEY_SDOWN', -999) or key == getattr(curses, 'KEY_NUMPAD2', -999):
                 if selected is None:
                     selected = select_next_unit(units, current_player, selected)
                 if selected is not None and selected.owner == current_player:
@@ -490,8 +908,9 @@ def run_curses(world: GameMap, p1: Player, p2: Player, units: List[Unit]) -> Non
                                 return
                     if moved:
                         recompute_visibility(world, current_player, units)
-                        selected = select_next_unit(units, current_player, selected)
-            elif key == curses.KEY_LEFT:
+                        if not (selected is not None and selected.is_alive() and selected.can_move()):
+                            selected = select_next_unit(units, current_player, selected)
+            elif key == curses.KEY_LEFT or key == getattr(curses, 'KEY_LEFT', -999) or key == getattr(curses, 'KEY_B1', -999) or key == getattr(curses, 'KEY_SLEFT', -999) or key == getattr(curses, 'KEY_NUMPAD4', -999):
                 if selected is None:
                     selected = select_next_unit(units, current_player, selected)
                 if selected is not None and selected.owner == current_player:
@@ -505,8 +924,9 @@ def run_curses(world: GameMap, p1: Player, p2: Player, units: List[Unit]) -> Non
                                 return
                     if moved:
                         recompute_visibility(world, current_player, units)
-                        selected = select_next_unit(units, current_player, selected)
-            elif key == curses.KEY_RIGHT:
+                        if not (selected is not None and selected.is_alive() and selected.can_move()):
+                            selected = select_next_unit(units, current_player, selected)
+            elif key == curses.KEY_RIGHT or key == getattr(curses, 'KEY_RIGHT', -999) or key == getattr(curses, 'KEY_B3', -999) or key == getattr(curses, 'KEY_SRIGHT', -999) or key == getattr(curses, 'KEY_NUMPAD6', -999):
                 if selected is None:
                     selected = select_next_unit(units, current_player, selected)
                 if selected is not None and selected.owner == current_player:
@@ -520,9 +940,210 @@ def run_curses(world: GameMap, p1: Player, p2: Player, units: List[Unit]) -> Non
                                 return
                     if moved:
                         recompute_visibility(world, current_player, units)
-                        selected = select_next_unit(units, current_player, selected)
+                        if not (selected is not None and selected.is_alive() and selected.can_move()):
+                            selected = select_next_unit(units, current_player, selected)
+            # Number keys 8/2/4/6 for movement (NumLock on)
+            elif key in (ord('8'),):
+                if selected is None:
+                    selected = select_next_unit(units, current_player, selected)
+                if selected is not None and selected.owner == current_player:
+                    moved, captured, victory, _ = try_move_unit(world, units, selected, 0, -1)
+                    if victory:
+                        stdscr.addstr(vh, 0, f"{current_player} wins! Press Q to quit."[:vw])
+                        stdscr.refresh()
+                        while True:
+                            k2 = stdscr.getch()
+                            if k2 in (ord('q'), ord('Q')):
+                                return
+                    if moved:
+                        recompute_visibility(world, current_player, units)
+                        if not (selected is not None and selected.is_alive() and selected.can_move()):
+                            selected = select_next_unit(units, current_player, selected)
+            elif key in (ord('2'),):
+                if selected is None:
+                    selected = select_next_unit(units, current_player, selected)
+                if selected is not None and selected.owner == current_player:
+                    moved, captured, victory, _ = try_move_unit(world, units, selected, 0, 1)
+                    if victory:
+                        stdscr.addstr(vh, 0, f"{current_player} wins! Press Q to quit."[:vw])
+                        stdscr.refresh()
+                        while True:
+                            k2 = stdscr.getch()
+                            if k2 in (ord('q'), ord('Q')):
+                                return
+                    if moved:
+                        recompute_visibility(world, current_player, units)
+                        if not (selected is not None and selected.is_alive() and selected.can_move()):
+                            selected = select_next_unit(units, current_player, selected)
+            elif key in (ord('4'),):
+                if selected is None:
+                    selected = select_next_unit(units, current_player, selected)
+                if selected is not None and selected.owner == current_player:
+                    moved, captured, victory, _ = try_move_unit(world, units, selected, -1, 0)
+                    if victory:
+                        stdscr.addstr(vh, 0, f"{current_player} wins! Press Q to quit."[:vw])
+                        stdscr.refresh()
+                        while True:
+                            k2 = stdscr.getch()
+                            if k2 in (ord('q'), ord('Q')):
+                                return
+                    if moved:
+                        recompute_visibility(world, current_player, units)
+                        if not (selected is not None and selected.is_alive() and selected.can_move()):
+                            selected = select_next_unit(units, current_player, selected)
+            elif key in (ord('6'),):
+                if selected is None:
+                    selected = select_next_unit(units, current_player, selected)
+                if selected is not None and selected.owner == current_player:
+                    moved, captured, victory, _ = try_move_unit(world, units, selected, 1, 0)
+                    if victory:
+                        stdscr.addstr(vh, 0, f"{current_player} wins! Press Q to quit."[:vw])
+                        stdscr.refresh()
+                        while True:
+                            k2 = stdscr.getch()
+                            if k2 in (ord('q'), ord('Q')):
+                                return
+                    if moved:
+                        recompute_visibility(world, current_player, units)
+                        if not (selected is not None and selected.is_alive() and selected.can_move()):
+                            selected = select_next_unit(units, current_player, selected)
+            # Numpad diagonals (support common curses keycodes)
+            elif key in (getattr(curses, 'KEY_A1', -999), getattr(curses, 'KEY_HOME', -999)):
+                if selected is None:
+                    selected = select_next_unit(units, current_player, selected)
+                if selected is not None and selected.owner == current_player:
+                    moved, captured, victory, _ = try_move_unit(world, units, selected, -1, -1)
+                    if victory:
+                        stdscr.addstr(vh, 0, f"{current_player} wins! Press Q to quit."[:vw])
+                        stdscr.refresh()
+                        while True:
+                            k2 = stdscr.getch()
+                            if k2 in (ord('q'), ord('Q')):
+                                return
+                    if moved:
+                        recompute_visibility(world, current_player, units)
+                        if not (selected is not None and selected.is_alive() and selected.can_move()):
+                            selected = select_next_unit(units, current_player, selected)
+            elif key in (getattr(curses, 'KEY_A3', -999), getattr(curses, 'KEY_PPAGE', -999)):
+                if selected is None:
+                    selected = select_next_unit(units, current_player, selected)
+                if selected is not None and selected.owner == current_player:
+                    moved, captured, victory, _ = try_move_unit(world, units, selected, 1, -1)
+                    if victory:
+                        stdscr.addstr(vh, 0, f"{current_player} wins! Press Q to quit."[:vw])
+                        stdscr.refresh()
+                        while True:
+                            k2 = stdscr.getch()
+                            if k2 in (ord('q'), ord('Q')):
+                                return
+                    if moved:
+                        recompute_visibility(world, current_player, units)
+                        if not (selected is not None and selected.is_alive() and selected.can_move()):
+                            selected = select_next_unit(units, current_player, selected)
+            elif key in (getattr(curses, 'KEY_C1', -999), getattr(curses, 'KEY_END', -999)):
+                if selected is None:
+                    selected = select_next_unit(units, current_player, selected)
+                if selected is not None and selected.owner == current_player:
+                    moved, captured, victory, _ = try_move_unit(world, units, selected, -1, 1)
+                    if victory:
+                        stdscr.addstr(vh, 0, f"{current_player} wins! Press Q to quit."[:vw])
+                        stdscr.refresh()
+                        while True:
+                            k2 = stdscr.getch()
+                            if k2 in (ord('q'), ord('Q')):
+                                return
+                    if moved:
+                        recompute_visibility(world, current_player, units)
+                        if not (selected is not None and selected.is_alive() and selected.can_move()):
+                            selected = select_next_unit(units, current_player, selected)
+            elif key in (getattr(curses, 'KEY_C3', -999), getattr(curses, 'KEY_NPAGE', -999)):
+                if selected is None:
+                    selected = select_next_unit(units, current_player, selected)
+                if selected is not None and selected.owner == current_player:
+                    moved, captured, victory, _ = try_move_unit(world, units, selected, 1, 1)
+                    if victory:
+                        stdscr.addstr(vh, 0, f"{current_player} wins! Press Q to quit."[:vw])
+                        stdscr.refresh()
+                        while True:
+                            k2 = stdscr.getch()
+                            if k2 in (ord('q'), ord('Q')):
+                                return
+                    if moved:
+                        recompute_visibility(world, current_player, units)
+                        if not (selected is not None and selected.is_alive() and selected.can_move()):
+                            selected = select_next_unit(units, current_player, selected)
+                    if victory:
+                        stdscr.addstr(vh, 0, f"{current_player} wins! Press Q to quit."[:vw])
+                        stdscr.refresh()
+                        while True:
+                            k2 = stdscr.getch()
+                            if k2 in (ord('q'), ord('Q')):
+                                return
+                    if moved:
+                        recompute_visibility(world, current_player, units)
+                        if not (selected is not None and selected.is_alive() and selected.can_move()):
+                            selected = select_next_unit(units, current_player, selected)
+            # Space now ends turn (see below)
+            elif key in (ord('b'), ord('B')):
+                # Set production at focused or hovered city
+                target_city: Optional[City] = None
+                if focused_city_index is not None:
+                    own_cities = [c for c in world.cities if c.owner == current_player]
+                    if own_cities:
+                        target_city = own_cities[focused_city_index % len(own_cities)]
+                if target_city is None and selected is not None and selected.owner == current_player:
+                    target_city = city_at(world, selected.x, selected.y)
+                if target_city is not None and target_city.owner == current_player:
+                    set_city_production(target_city, 'Army')
+            elif key in (ord('f'), ord('F')):
+                # Found city from selected army, if valid
+                if selected is not None and selected.owner == current_player:
+                    if found_city_from_army(world, units, selected):
+                        # Update visibility for current player due to new city sight
+                        recompute_visibility(world, current_player, units)
+                        # Auto-select next unit since this one is gone
+                        selected = select_next_unit(units, current_player, None)
+            elif key in (ord('r'), ord('R')):
+                target_city = None
+                if focused_city_index is not None:
+                    own_cities = [c for c in world.cities if c.owner == current_player]
+                    if own_cities:
+                        target_city = own_cities[focused_city_index % len(own_cities)]
+                if target_city is None and selected is not None and selected.owner == current_player:
+                    target_city = city_at(world, selected.x, selected.y)
+                if target_city is not None and target_city.owner == current_player:
+                    set_city_production(target_city, 'Fighter')
+            elif key in (ord('p'), ord('P')):
+                target_city = None
+                if focused_city_index is not None:
+                    own_cities = [c for c in world.cities if c.owner == current_player]
+                    if own_cities:
+                        target_city = own_cities[focused_city_index % len(own_cities)]
+                if target_city is None and selected is not None and selected.owner == current_player:
+                    target_city = city_at(world, selected.x, selected.y)
+                if target_city is not None and target_city.owner == current_player:
+                    cycle_city_production(target_city)
+            elif key in (ord('d'), ord('D')):
+                # Detonate missile at current position (if selected is a missile)
+                if selected is not None and isinstance(selected, NuclearMissile) and selected.owner == current_player:
+                    det_u, det_c = detonate_missile(world, units, current_player, selected.x, selected.y, radius=10)
+                    selected.hp = 0
+                    # Remove dead missiles immediately from selection
+                    selected = None
+                    recompute_visibility(world, current_player, units)
+                    # Show summary on status line
+                    msg = f"Nuke: destroyed {det_u} units, neutralized {det_c} cities"
+                    stdscr.addstr(vh, 0, msg[:vw])
+                    stdscr.refresh()
+                    selected = select_next_unit(units, current_player, selected)
+            elif key in (ord('c'), ord('C')):
+                own_cities = [c for c in world.cities if c.owner == current_player]
+                if own_cities:
+                    focused_city_index = 0 if focused_city_index is None else (focused_city_index + 1) % len(own_cities)
+                    fc = own_cities[focused_city_index]
+                    vx, vy = center_view_on(world, vw, vh, fc.x, fc.y)
             elif key in (ord('s'), ord('S')):
-                # Save game prompt (moved after arrow handling)
+                # Save game prompt
                 prompt = "Save as (no extension): "
                 stdscr.move(vh, 0)
                 stdscr.clrtoeol()
@@ -560,17 +1181,13 @@ def run_curses(world: GameMap, p1: Player, p2: Player, units: List[Unit]) -> Non
                 stdscr.move(vh, 0)
                 stdscr.clrtoeol()
                 stdscr.addstr(vh, 0, prompt[:vw])
-                # List recent saves above the prompt (most recent first)
+                # List available saves one line above
                 try:
+                    list_y = max(0, vh - 1)
                     save_dir = ensure_save_dir()
-                    files = [fn for fn in os.listdir(save_dir) if fn.lower().endswith('.json')]
-                    files_sorted = sorted(files, key=lambda fn: os.path.getmtime(os.path.join(save_dir, fn)), reverse=True)
-                    display = [fn[:-5] for fn in files_sorted[:10]]
-                    header = "Recent saves:"
-                    lines = [header] + (display if display else ["(none)"])
-                    start_y = max(0, vh - 1 - len(lines))
-                    for idx, text in enumerate(lines):
-                        stdscr.addstr(start_y + idx, 0, text[:vw])
+                    saves = [fn[:-5] for fn in os.listdir(save_dir) if fn.lower().endswith('.json')]
+                    list_line = "Saves: " + (" ".join(sorted(saves)) if saves else "(none)")
+                    stdscr.addstr(list_y, 0, list_line[:vw])
                 except Exception:
                     pass
                 stdscr.refresh()
@@ -592,14 +1209,7 @@ def run_curses(world: GameMap, p1: Player, p2: Player, units: List[Unit]) -> Non
                 if name:
                     save_dir = ensure_save_dir()
                     path = os.path.join(save_dir, f"{name}.json")
-                    try:
-                        data = load_full_game(path)
-                    except Exception as exc:
-                        stdscr.move(vh, 0)
-                        stdscr.clrtoeol()
-                        stdscr.addstr(vh, 0, f"Load failed: {exc}"[:vw])
-                        stdscr.refresh()
-                        continue
+                    data = load_full_game(path)
                     # Rehydrate map, units, players, turn
                     loaded_map = data["map"]
                     world.width = loaded_map["width"]
@@ -611,13 +1221,21 @@ def run_curses(world: GameMap, p1: Player, p2: Player, units: List[Unit]) -> Non
                     # Units
                     units.clear()
                     for ud in data["units"]:
-                        u = Army(x=ud["x"], y=ud["y"], owner=ud["owner"])  # Only Army for now
-                        u.symbol = ud.get("symbol", "A")
-                        u.max_hp = ud.get("max_hp", 10)
-                        u.hp = ud.get("hp", 10)
-                        u.movement_points = ud.get("movement_points", 1)
-                        u.fuel = ud.get("fuel")
-                        u.moves_left = ud.get("moves_left", 1)
+                        utype = ud.get("unit_type", "Army")
+                        if utype == "Fighter":
+                            u = Fighter(x=ud["x"], y=ud["y"], owner=ud["owner"]) 
+                        elif utype == "Carrier":
+                            u = Carrier(x=ud["x"], y=ud["y"], owner=ud["owner"]) 
+                        elif utype == "NuclearMissile":
+                            u = NuclearMissile(x=ud["x"], y=ud["y"], owner=ud["owner"]) 
+                        else:
+                            u = Army(x=ud["x"], y=ud["y"], owner=ud["owner"]) 
+                        u.symbol = ud.get("symbol", u.symbol)
+                        u.max_hp = ud.get("max_hp", u.max_hp)
+                        u.hp = ud.get("hp", u.hp)
+                        u.movement_points = ud.get("movement_points", u.movement_points)
+                        u.fuel = ud.get("fuel", None)
+                        u.moves_left = ud.get("moves_left", u.movement_points)
                         u.home_city = tuple(ud["home_city"]) if ud.get("home_city") else None
                         units.append(u)
                     # Players
@@ -651,6 +1269,8 @@ def run_curses(world: GameMap, p1: Player, p2: Player, units: List[Unit]) -> Non
             elif key in (ord(' '),):
                 # End turn: production, switch player, reset moves, check victory
                 advance_production_and_spawn(world, units)
+                # Fighter basing: current player's fighters must be on friendly city
+                enforce_fighter_basing(world, units, current_player)
                 # Victory check: opponent has zero cities
                 opponent = p2.name if current_player == p1.name else p1.name
                 opp_city_count = sum(1 for c in world.cities if c.owner == opponent)
@@ -700,6 +1320,7 @@ def run_fallback(world: GameMap, p1: Player, p2: Player, units: List[Unit]) -> N
     current_player = p1.name
     turn_number = 1
     selected: Optional[Unit] = None
+    focused_city_index: Optional[int] = None
     reset_moves_for_owner(units, current_player)
     # Init per-player FoW
     world.init_fow([p1.name, p2.name])
@@ -726,10 +1347,19 @@ def run_fallback(world: GameMap, p1: Player, p2: Player, units: List[Unit]) -> N
         city_info = ""
         if selected is not None:
             c = city_at(world, selected.x, selected.y)
-            if c is not None and c.owner == current_player and c.production_type == 'Army' and c.production_cost > 0:
+            if c is not None and c.owner == current_player and c.production_type and c.production_cost > 0:
                 eta = max(0, c.production_cost - c.production_progress)
-                city_info = f" | City: Army ETA {eta}"
-        print(f"P:{current_player} T:{turn_number} | Sel:{sel_txt}{city_info} | n/wasd/b/e/q | arrows pan")
+                city_info = f" | City: {c.production_type} ETA {eta}"
+        # Focused city info
+        focus_info = ""
+        if focused_city_index is not None:
+            own_cities = [c for c in world.cities if c.owner == current_player]
+            if own_cities:
+                fc = own_cities[focused_city_index % len(own_cities)]
+                eta2 = max(0, (fc.production_cost or 0) - (fc.production_progress or 0)) if fc.production_cost else 0
+                ptxt = fc.production_type or "(none)"
+                focus_info = f" | Focus: ({fc.x},{fc.y}) {ptxt} ETA {eta2}"
+        print(f"P:{current_player} T:{turn_number} | Sel:{sel_txt}{city_info}{focus_info} | n/wasd/b/r/p/c/e/q | arrows pan")
         cmd = input("> ").strip()
         low = cmd.lower()
         if cmd == 'q':
@@ -747,18 +1377,55 @@ def run_fallback(world: GameMap, p1: Player, p2: Player, units: List[Unit]) -> N
         elif cmd == 's':
             vy = clamp(vy + 1, 0, max(0, world.height - vh))
         elif cmd == 'n':
-            selected = select_next_unit(units, current_player, selected)
+            selected = select_next_unit_any(units, current_player, selected)
         elif cmd in ('i', 'k', 'j', 'l', 'up', 'down', 'left', 'right', 'move', 'm', 'wasd'):
             # support 'i/j/k/l' or 'w/a/s/d' style by checking exact strings next
             pass
         elif cmd == 'b':
-            if selected is not None and selected.owner == current_player:
-                c = city_at(world, selected.x, selected.y)
-                if c is not None and c.owner == current_player:
-                    c.production_type = 'Army'
-                    c.production_cost = 8
+            target_city = None
+            if focused_city_index is not None:
+                own_cities = [c for c in world.cities if c.owner == current_player]
+                if own_cities:
+                    target_city = own_cities[focused_city_index % len(own_cities)]
+            if target_city is None and selected is not None and selected.owner == current_player:
+                target_city = city_at(world, selected.x, selected.y)
+            if target_city is not None and target_city.owner == current_player:
+                set_city_production(target_city, 'Army')
+        elif cmd == 'r':
+            target_city = None
+            if focused_city_index is not None:
+                own_cities = [c for c in world.cities if c.owner == current_player]
+                if own_cities:
+                    target_city = own_cities[focused_city_index % len(own_cities)]
+            if target_city is None and selected is not None and selected.owner == current_player:
+                target_city = city_at(world, selected.x, selected.y)
+            if target_city is not None and target_city.owner == current_player:
+                set_city_production(target_city, 'Fighter')
+        elif cmd == 'p':
+            target_city = None
+            if focused_city_index is not None:
+                own_cities = [c for c in world.cities if c.owner == current_player]
+                if own_cities:
+                    target_city = own_cities[focused_city_index % len(own_cities)]
+            if target_city is None and selected is not None and selected.owner == current_player:
+                target_city = city_at(world, selected.x, selected.y)
+            if target_city is not None and target_city.owner == current_player:
+                cycle_city_production(target_city)
+        elif cmd == 'c':
+            own_cities = [c for c in world.cities if c.owner == current_player]
+            if own_cities:
+                focused_city_index = 0 if focused_city_index is None else (focused_city_index + 1) % len(own_cities)
+                fc = own_cities[focused_city_index]
+                vx, vy = center_view_on(world, vw, vh, fc.x, fc.y)
         elif low == 'e':
             advance_production_and_spawn(world, units)
+            # Auto-detonate any missiles that have exceeded range or have moves <= 0 (safety)
+            for u in list(units):
+                if isinstance(u, NuclearMissile) and u.is_alive():
+                    # End-turn rule: must detonate regardless of remaining moves
+                    det_u, det_c = detonate_missile(world, units, u.owner, u.x, u.y, radius=10)
+                    u.hp = 0
+            enforce_fighter_basing(world, units, current_player)
             opponent = p2.name if current_player == p1.name else p1.name
             opp_city_count = sum(1 for c in world.cities if c.owner == opponent)
             my_city_count = sum(1 for c in world.cities if c.owner == current_player)
@@ -784,7 +1451,8 @@ def run_fallback(world: GameMap, p1: Player, p2: Player, units: List[Unit]) -> N
                     break
                 if moved:
                     recompute_visibility(world, current_player, units)
-                    selected = select_next_unit(units, current_player, selected)
+                    if not (selected is not None and selected.is_alive() and selected.can_move()):
+                        selected = select_next_unit(units, current_player, selected)
         elif low in ('k',):
             if selected is None:
                 selected = select_next_unit(units, current_player, selected)
@@ -795,7 +1463,8 @@ def run_fallback(world: GameMap, p1: Player, p2: Player, units: List[Unit]) -> N
                     break
                 if moved:
                     recompute_visibility(world, current_player, units)
-                    selected = select_next_unit(units, current_player, selected)
+                    if not (selected is not None and selected.is_alive() and selected.can_move()):
+                        selected = select_next_unit(units, current_player, selected)
         elif low in ('j',):
             if selected is None:
                 selected = select_next_unit(units, current_player, selected)
@@ -806,7 +1475,8 @@ def run_fallback(world: GameMap, p1: Player, p2: Player, units: List[Unit]) -> N
                     break
                 if moved:
                     recompute_visibility(world, current_player, units)
-                    selected = select_next_unit(units, current_player, selected)
+                    if not (selected is not None and selected.is_alive() and selected.can_move()):
+                        selected = select_next_unit(units, current_player, selected)
         elif low in ('l',):
             if selected is None:
                 selected = select_next_unit(units, current_player, selected)
@@ -817,9 +1487,17 @@ def run_fallback(world: GameMap, p1: Player, p2: Player, units: List[Unit]) -> N
                     break
                 if moved:
                     recompute_visibility(world, current_player, units)
-                    selected = select_next_unit(units, current_player, selected)
+                    if not (selected is not None and selected.is_alive() and selected.can_move()):
+                        selected = select_next_unit(units, current_player, selected)
         elif low in (' ', 'skip', 'wait'):
             selected = select_next_unit(units, current_player, selected)
+        elif low in ('d',):
+            if selected is not None and isinstance(selected, NuclearMissile) and selected.owner == current_player:
+                det_u, det_c = detonate_missile(world, units, current_player, selected.x, selected.y, radius=10)
+                selected.hp = 0
+                recompute_visibility(world, current_player, units)
+                print(f"Nuke: destroyed {det_u} units, neutralized {det_c} cities")
+                selected = select_next_unit(units, current_player, None)
         elif low.startswith('save'):
             parts = cmd.split()
             if len(parts) >= 2:
@@ -839,11 +1517,7 @@ def run_fallback(world: GameMap, p1: Player, p2: Player, units: List[Unit]) -> N
                 if name:
                     save_dir = ensure_save_dir()
                     path = os.path.join(save_dir, f"{name}.json")
-                    try:
-                        data = load_full_game(path)
-                    except Exception as exc:
-                        print(f"Load failed: {exc}")
-                        continue
+                    data = load_full_game(path)
                     loaded_map = data["map"]
                     world.width = loaded_map["width"]
                     world.height = loaded_map["height"]
@@ -853,13 +1527,21 @@ def run_fallback(world: GameMap, p1: Player, p2: Player, units: List[Unit]) -> N
                     world.explored = loaded_map.get("explored", {})
                     units.clear()
                     for ud in data["units"]:
-                        u = Army(x=ud["x"], y=ud["y"], owner=ud["owner"])  # Only Army for now
-                        u.symbol = ud.get("symbol", "A")
-                        u.max_hp = ud.get("max_hp", 10)
-                        u.hp = ud.get("hp", 10)
-                        u.movement_points = ud.get("movement_points", 1)
-                        u.fuel = ud.get("fuel")
-                        u.moves_left = ud.get("moves_left", 1)
+                        utype = ud.get("unit_type", "Army")
+                        if utype == "Fighter":
+                            u = Fighter(x=ud["x"], y=ud["y"], owner=ud["owner"]) 
+                        elif utype == "Carrier":
+                            u = Carrier(x=ud["x"], y=ud["y"], owner=ud["owner"]) 
+                        elif utype == "NuclearMissile":
+                            u = NuclearMissile(x=ud["x"], y=ud["y"], owner=ud["owner"]) 
+                        else:
+                            u = Army(x=ud["x"], y=ud["y"], owner=ud["owner"]) 
+                        u.symbol = ud.get("symbol", u.symbol)
+                        u.max_hp = ud.get("max_hp", u.max_hp)
+                        u.hp = ud.get("hp", u.hp)
+                        u.movement_points = ud.get("movement_points", u.movement_points)
+                        u.fuel = ud.get("fuel", None)
+                        u.moves_left = ud.get("moves_left", u.movement_points)
                         u.home_city = tuple(ud["home_city"]) if ud.get("home_city") else None
                         units.append(u)
                     pdat = data.get("players", [])

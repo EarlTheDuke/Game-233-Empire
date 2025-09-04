@@ -11,7 +11,7 @@ A faithful, modern Python reproduction of the classic 1977 turn-based strategy g
 ## Features (Roadmap)
 - Random map generation with islands and continents, ~60 cities on land.
 - Fog of war; unexplored is blank, revealed around units and cities.
-- Unit progression: Armies (A), Destroyers (D), Fighters (F, with fuel), Submarines (S), Transports (TT), Carriers (C), Battleships (BB), Nuclear weapons.
+- Unit progression: Armies (A), Fighters (F, must end turn at friendly city), Destroyers (D), Submarines (S), Transports (TT), Carriers (C), Battleships (BB), Nuclear weapons.
 - City management: set production, per-turn build times, capture mechanics.
 - Turn-based gameplay modes: Orders, Move, Edit; key-driven interaction.
 - Probabilistic combat resolution, matchup-based advantages, city conquest odds.
@@ -56,16 +56,21 @@ pip install windows-curses
 python main.py
 ```
 - Curses UI keys:
-  - Arrow keys move selected unit; `h/j/k/l` pan the camera
-  - `N` select next unit
-  - `B` set production to Army at owned city under selected unit
-  - `S` save (prompts for name); `O` load (prompts and lists saves)
+  - Arrow keys or `h/j/k/l` to pan
+  - `N` select next unit, `W/A/S/D` move selected unit
+  - `B` set production to Army at focused/selected city
+  - `R` set production to Fighter at focused/selected city
+  - `P` cycle production at focused/selected city
+  - `C` cycle focus through owned cities
   - `Space` end turn (hands off to the other player)
   - `Q` quit
 - Fallback text UI commands:
   - Pan with `w/a/s/d`
   - `n` select next unit, `i/j/k/l` move selected unit
-  - `b` set production to Army at owned city under selected unit
+  - `b` set production to Army at focused/selected city
+  - `r` set production to Fighter at focused/selected city
+  - `p` cycle production at focused/selected city
+  - `c` cycle focus through owned cities
   - `e` end turn (hands off to the other player)
   - `q` quit
 
@@ -122,5 +127,30 @@ Run_Game_233_Empire.bat  # Windows launcher (double-click to start)
 - Future: add unit tests for generation, fog-of-war, and combat odds.
 
 ## Controls
-- Curses UI: Arrow keys move; `h/j/k/l` pan; `N` next unit; `B` build Army; `S` save; `O` load; `Space` end turn; `Q` quit.
-- Fallback text UI: Pan with `w/a/s/d`; `n` next unit; `i/j/k/l` move; `b` build Army; `e` end turn; `
+- Curses UI: Pan with arrows or `h/j/k/l`; `N` next unit; `W/A/S/D` move; `B` set Army; `R` set Fighter; `P` cycle production; `C` cycle cities; `Space` end turn; `Q` quit.
+- Fallback text UI: Pan with `w/a/s/d`; `n` next unit; `i/j/k/l` move; `b` set Army; `r` set Fighter; `p` cycle production; `c` cycle cities; `e` end turn; `q` quit.
+
+## Troubleshooting (Windows)
+- Window opens and closes instantly when double-clicking:
+  - Run from PowerShell to see messages:
+    ```powershell
+    cd "C:\Users\sugar\Desktop\ALL AI GAMES\Projects in prgress\Game 233 Empire"
+    .\Run_Game_233_Empire.bat
+    ```
+  - Check `last_run.log` for errors.
+- Python not found:
+  - Install Python from `https://www.python.org/` and ensure it’s on PATH, or use the `py` launcher.
+- Arrow keys don’t work / no colors:
+  - Install `windows-curses`:
+    ```powershell
+    py -m pip install --user windows-curses
+    ```
+  - Then run `python main.py` again.
+
+## Future Extensions
+- Multiplayer via sockets or hotseat with turn files.
+- Richer UI with Pygame; zoomed maps; mouse support.
+- Scenario generation and map seeds.
+
+## License
+- TBD (choose MIT or similar for permissive use).

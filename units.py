@@ -41,6 +41,23 @@ class Destroyer(Unit):
 
 class Fighter(Unit):
     def __init__(self, x: int, y: int, owner: str) -> None:
-        super().__init__(x=x, y=y, owner=owner, symbol='F', max_hp=8, hp=8, movement_points=6, fuel=8)
+        # 12 move per turn; no persistent fuel tracking (basing rule handled in main loop)
+        super().__init__(x=x, y=y, owner=owner, symbol='F', max_hp=8, hp=8, movement_points=12, fuel=None)
+
+
+class Carrier(Unit):
+    def __init__(self, x: int, y: int, owner: str) -> None:
+        # Slow, sturdy sea unit; 3 move, cannot enter land
+        super().__init__(x=x, y=y, owner=owner, symbol='C', max_hp=16, hp=16, movement_points=3)
+
+
+class NuclearMissile(Unit):
+    def __init__(self, x: int, y: int, owner: str) -> None:
+        # One-turn strategic weapon: up to 40 tiles straight-line, detonates on command or at max range
+        super().__init__(x=x, y=y, owner=owner, symbol='M', max_hp=1, hp=1, movement_points=40)
+        # Direction lock after first move: (-1,0),(1,0),(0,-1),(0,1), and diagonals
+        self.direction_dx: int | None = None
+        self.direction_dy: int | None = None
+        self.traveled: int = 0
 
 
