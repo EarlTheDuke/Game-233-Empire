@@ -1,0 +1,25 @@
+# Byte-compiled / cache
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Logs
+last_run.log
+*.log
+
+# Virtual envs
+.venv/
+venv/
+ENV/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Saved game artifacts
+saved games/
+*.json
+
+# But keep key project JSON (override below if needed)
+!README.md
+
